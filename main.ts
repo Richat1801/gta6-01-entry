@@ -1,38 +1,41 @@
-// Solmar Bay — entry program (Node 22, standard library only).
-// Copies game/ and screenshots/ from this repository into the output
-// directory and writes /output/dossier.json with buildDossier from
-// vendor/makefun-game.ts. Both runs write identical bytes: the copy is a
-// plain recursive copy in sorted order and the dossier is deterministic.
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+// Solmar Bay — Heat of the Coast: a gta6-01 entry (Node 22, standard library only).
+// This program hands the game in. It copies this repository's game/ and
+// screenshots/ beside this file into /output and writes /output/dossier.json,
+// the summary the judge reads, with the vendored make.fun library.
+// The game itself is plain static files a desktop browser loads offline:
+// game/index.html and its ES modules, three.js vendored under game/vendor/,
+// no network request at play time.
+//
+// Serve it locally with `node serve.ts` is not shipped; any static server works:
+//   npx --yes serve game
+// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
+//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+
+import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const repoRoot = dirname(fileURLToPath(import.meta.url));
-const outDir = process.env.MAKEFUN_OUTPUT_DIR || '/output';
+const here = fileURLToPath(new URL('.', import.meta.url));
+const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-function copyTree(src, dest) {
-  mkdirSync(dest, { recursive: true });
-  cpSync(src, dest, { recursive: true });
-}
+mkdirSync(out, { recursive: true });
+cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
+mkdirSync(join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 
-function main() {
-  const gameSrc = join(repoRoot, 'game');
-  const shotsSrc = join(repoRoot, 'screenshots');
-  if (!existsSync(gameSrc)) throw new Error('game/ is missing from the repository');
-  if (!existsSync(shotsSrc)) throw new Error('screenshots/ is missing from the repository');
-  rmSync(outDir, { recursive: true, force: true });
-  mkdirSync(outDir, { recursive: true });
-  copyTree(gameSrc, join(outDir, 'game'));
-  copyTree(shotsSrc, join(outDir, 'screenshots'));
-  const dossier = buildDossier(outDir, {
+// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the
+// bytes; the others refuse an entry the scorer would refuse (more than 4
+// screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of
+// game files, in all, or a path under game/ over 1000 bytes: game/ counts
+// beside /output's own 1000-entry cap, its screenshots/ and dossier.json).
+writeFileSync(
+  join(out, 'dossier.json'),
+  buildDossier(out, {
     text_max_bytes: 163840,
     screenshots: { max: 4, max_bytes: 262144 },
     game_max_files: 993,
     game_max_bytes: 50331648,
-  });
-  writeFileSync(join(outDir, 'dossier.json'), dossier);
-  console.log(`wrote ${outDir}/dossier.json (${dossier.length} bytes)`);
-}
-
-main();
+    game_path_max_bytes: 1000,
+  }),
+);

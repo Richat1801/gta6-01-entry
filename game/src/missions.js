@@ -1,177 +1,198 @@
-// Solmar Bay — story missions: five chained jobs for fixer Rico Vane, from a
-// first meeting at the marina to a turf shootout at the warehouse. Each
-// mission is a small state machine: objective text, map marker, dialogue,
-// completion test and cash reward.
-import * as THREE from 'three';
+// Solmar Bay — the story: 5 chained missions for fixer Rico Vane.
+// One job: mission definitions, step flow, markers and rewards.
+// Rewards are paid by main.js, which increments the mission index and only
+// then saves — so a mission can never pay twice.
 
-export const MISSION_DEFS = [
-  {
-    id: 'meet-rico',
-    name: '1 — The Fixer',
-    intro: 'Rico Vane runs Solmar Bay from a folding chair on the marina. He has work for a driver with no questions.',
-    objective: 'Meet Rico at the Marina pier',
-    marker: 'marina',
-    reward: 150,
-    hint: 'Follow the yellow marker. Walk or grab a car — E steals one.',
-    dialogue: [
-      'RICO: "You\'re the new kid. Good. Solmar Bay eats the slow."',
-      'RICO: "First rule: the cops own the day. We own the night."',
-      'RICO: "Prove you can drive and this city is yours."',
-    ],
-  },
-  {
-    id: 'borrowed-wheels',
-    name: '2 — Borrowed Wheels',
-    intro: 'Rico needs a clean ride for a client. "Borrow" any car on the street and bring it to the garage.',
-    objective: 'Steal a car (E) and drive it to Rico\'s Garage',
-    marker: 'garage',
-    reward: 400,
-    hint: 'Press E near a parked car to take it. Don\'t let the cops see you.',
-    dialogue: [
-      'RICO: "Nice. The client pays cash, no names."',
-      'RICO: "One more job and you\'re not a tourist anymore."',
-    ],
-  },
-  {
-    id: 'sunset-run',
-    name: '3 — Sunset Run',
-    intro: 'A package has to reach the beach kiosk before the sun drops. The clock is already running.',
-    objective: 'Deliver the package to the Beach Kiosk — 90 seconds',
-    marker: 'kiosk',
-    reward: 600,
-    timeLimit: 90,
-    hint: 'Drive fast, cut corners, ignore the traffic. Shift is boost.',
-    dialogue: [
-      'RICO: "Ninety seconds. The kiosk guy closes at sunset."',
-      'RICO: "If the cops light you up, lose them first."',
-    ],
-  },
-  {
-    id: 'heat-wave',
-    name: '4 — Heat Wave',
-    intro: 'The Sunset Run was spotted. SBPD has your plate. Shake the heat — get your wanted level to zero.',
-    objective: 'Lose the cops — get to 0 stars',
-    marker: null,
-    reward: 800,
-    forceWanted: 3,
-    hint: 'Hide in the back streets, keep moving, wait for the stars to fade.',
-    dialogue: [
-      'RICO: "They made the car. Lay low, kid. Don\'t come back hot."',
-      'DISPATCH (radio): "All units, suspect last seen downtown Solmar."',
-    ],
-  },
-  {
-    id: 'turf-war',
-    name: '5 — Turf War',
-    intro: 'The Red Tide crew jumped Rico\'s warehouse. Take the docks back — and make it stick.',
-    objective: 'Clear the Warehouse of Red Tide rivals (0 left)',
-    marker: 'warehouse',
-    reward: 2500,
-    enemies: 6,
-    hint: 'Click to shoot, F to punch. Use the crates as cover.',
-    dialogue: [
-      'RICO: "They took my warehouse. Take it back and it\'s yours too."',
-      'RICO: "No cops this time — just you and them."',
-    ],
-  },
-];
+import { MISSION_REWARDS } from './config.js';
 
-export class MissionManager {
-  constructor(spawnPoints, callbacks) {
-    this.spawnPoints = spawnPoints;
-    this.cb = callbacks; // {onStart, onComplete, onFail, onDialogue, setWanted, spawnEnemies, clearEnemies, getState}
-    this.index = 0;
+function defs(P) {
+  return [
+    {
+      title: '1 — Marina Pickup',
+      brief: 'Rico Vane needs a package off the marina docks. Go get it, then bring it to his garage.',
+      steps: [
+        { kind: 'goto', text: 'Go to the marina docks and collect the package', x: P.marina.x, z: P.marina.z, radius: 6 },
+        { kind: 'goto', text: 'Deliver the package to Rico\u2019s garage', x: P.garage.x, z: P.garage.z, radius: 7 },
+      ],
+    },
+    {
+      title: '2 — Coast Run',
+      brief: 'The package is hot. Drive it downtown before the buyer walks — 100 seconds.',
+      steps: [
+        { kind: 'goto', text: 'Drive the package to the downtown drop-off — beat the clock!', x: 25, z: -25, radius: 8, timeLimit: 100 },
+      ],
+    },
+    {
+      title: '3 — Harbor Heat',
+      brief: 'The Dagger crew jumped Rico\u2019s runners at the marina. Go settle it.',
+      steps: [
+        { kind: 'kill', text: 'Take out the Dagger crew at the marina (0/4)', x: P.marina.x, z: P.marina.z, radius: 26, kills: 4, spawnAt: 'marina' },
+        { kind: 'goto', text: 'Report back to Rico\u2019s garage', x: P.garage.x, z: P.garage.z, radius: 7 },
+      ],
+    },
+    {
+      title: '4 — Downtown Getaway',
+      brief: 'Rico wants the gold Sirocco parked downtown. Steal it — the cops will notice.',
+      steps: [
+        { kind: 'steal', text: 'Steal the gold Sirocco downtown (walk up and press E)', x: P.targetCarSpot.x, z: P.targetCarSpot.z, radius: 10 },
+        { kind: 'escape', text: 'Lose the cops — stay hidden until your wanted level clears', x: P.garage.x, z: P.garage.z, radius: 8 },
+        { kind: 'goto', text: 'Bring the Sirocco to Rico\u2019s garage', x: P.garage.x, z: P.garage.z, radius: 8 },
+      ],
+    },
+    {
+      title: '5 — Bay Kingpin',
+      brief: 'Marlo Kane runs the Daggers from the marina warehouse. End him, and Solmar Bay is yours.',
+      steps: [
+        { kind: 'kill', text: 'Storm the warehouse — take down Marlo Kane and his guards (0/6)', x: P.warehouse.x, z: P.warehouse.z, radius: 28, kills: 6, spawnAt: 'warehouse', boss: true },
+        { kind: 'goto', text: 'Return to Rico\u2019s garage and collect your cut', x: P.garage.x, z: P.garage.z, radius: 7 },
+      ],
+    },
+  ];
+}
+
+export class MissionSystem {
+  constructor(places, hooks) {
+    this.places = places;
+    this.hooks = hooks; // {toast, objective, reward, allDone, spawnRivals, setWanted, markTargetCar}
+    this.list = defs(places);
+    this.missionIndex = 0;
+    this.stepIndex = 0;
+    this.killsDone = 0;
+    this.stepTimer = 0;
     this.active = false;
-    this.stage = 'idle'; // idle | go | done
-    this.timer = 0;
-    this.markerPos = null;
-    this.enemiesLeft = 0;
-    this.startedOnce = false;
+    this.finishedAll = false;
   }
 
-  get current() { return MISSION_DEFS[this.index] || null; }
-  get done() { return this.index >= MISSION_DEFS.length; }
-
-  markerPosition() {
-    const def = this.current;
-    if (!def || !def.marker) return null;
-    return this.spawnPoints[def.marker];
+  current() { return this.list[this.missionIndex] || null; }
+  currentStep() {
+    const m = this.current();
+    return m ? m.steps[this.stepIndex] : null;
   }
 
   start() {
-    const def = this.current;
-    if (!def || this.active) return;
     this.active = true;
-    this.stage = 'go';
-    this.startedOnce = true;
-    this.timer = def.timeLimit || 0;
-    this.markerPos = this.markerPosition();
-    if (def.forceWanted) this.cb.setWanted(def.forceWanted);
-    if (def.enemies) {
-      this.cb.spawnEnemies(this.spawnPoints.warehouse, def.enemies);
-      this.enemiesLeft = def.enemies;
-    }
-    this.cb.onStart(def);
+    this.stepIndex = 0;
+    this.killsDone = 0;
+    this.stepTimer = 0;
+    this.enterStep();
   }
 
-  /** Per-frame progress checks. ctx: {pos, inCar, wanted, enemiesLeft}. */
-  update(dt, ctx) {
-    if (!this.active) return;
-    const def = this.current;
-    if (def.timeLimit) {
-      this.timer -= dt;
-      if (this.timer <= 0) { this.fail('Out of time — the package never arrived.'); return; }
+  // Restore saved progress exactly (used by Continue).
+  restore(missionIndex, stepIndex) {
+    this.missionIndex = Math.min(missionIndex, this.list.length - 1);
+    this.stepIndex = stepIndex || 0;
+    this.killsDone = 0;
+    this.stepTimer = 0;
+    this.active = true;
+    this.enterStep(true);
+  }
+
+  enterStep(restoring) {
+    const step = this.currentStep();
+    const m = this.current();
+    if (!step || !m) return;
+    this.stepTimer = 0;
+    if (step.kind === 'kill') {
+      const at = step.spawnAt === 'warehouse' ? this.places.warehouse : this.places.marina;
+      this.hooks.spawnRivals(step.kills, at.x, at.z, !!step.boss);
     }
-    if (def.id === 'meet-rico' && this.markerPos && ctx.pos.distanceTo(this.markerPos) < 6) {
-      this.complete(); return;
+    if (step.kind === 'steal') this.hooks.markTargetCar();
+    this.hooks.objective(m.title + ' — ' + step.text);
+    if (!restoring) this.hooks.toast(m.title + ': ' + m.brief);
+  }
+
+  marker() {
+    const step = this.currentStep();
+    if (!step || !this.active || this.finishedAll) return null;
+    return { x: step.x, z: step.z, kind: step.kind };
+  }
+
+  registerKill() {
+    const step = this.currentStep();
+    if (!step || step.kind !== 'kill') return;
+    this.killsDone += 1;
+    const m = this.current();
+    const left = step.kills - this.killsDone;
+    this.hooks.objective(m.title + ' — ' + step.text.replace(/\(\d+\/\d+\)/, '(' + this.killsDone + '/' + step.kills + ')'));
+    if (left <= 0) this.advance();
+    else this.hooks.toast('Rival down — ' + left + ' to go.');
+  }
+
+  notifyCarStolen(car) {
+    const step = this.currentStep();
+    if (!step || step.kind !== 'steal') return;
+    if (!car.target) {
+      this.hooks.toast('Wrong car — Rico wants the gold Sirocco downtown.');
+      return;
     }
-    if (def.id === 'borrowed-wheels' && ctx.inCar && this.markerPos && ctx.pos.distanceTo(this.markerPos) < 8) {
-      this.complete(); return;
+    this.hooks.setWanted(3);
+    this.hooks.toast('You stole the Sirocco! The cops are on you — lose them!');
+    this.advance();
+  }
+
+  update(dt, playerPos, wanted) {
+    if (!this.active || this.finishedAll) return;
+    const step = this.currentStep();
+    if (!step) return;
+    if (step.kind === 'goto' || step.kind === 'collect') {
+      const d = Math.hypot(playerPos.x - step.x, playerPos.z - step.z);
+      if (d <= step.radius) {
+        if (this.missionIndex === 0 && this.stepIndex === 0) this.hooks.toast('Package collected. Get it to Rico.');
+        this.advance();
+        return;
+      }
     }
-    if (def.id === 'sunset-run' && this.markerPos && ctx.pos.distanceTo(this.markerPos) < 8) {
-      this.complete(); return;
+    if (step.kind === 'escape') {
+      if (wanted <= 0) {
+        this.hooks.toast('Clean. The heat is off — bring the car to Rico.');
+        this.advance();
+      }
+      return;
     }
-    if (def.id === 'heat-wave' && ctx.wanted === 0) {
-      this.complete(); return;
-    }
-    if (def.id === 'turf-war') {
-      this.enemiesLeft = ctx.enemiesLeft;
-      if (this.enemiesLeft <= 0 && ctx.pos.distanceTo(this.spawnPoints.warehouse) < 30) {
-        this.complete(); return;
+    if (step.timeLimit) {
+      this.stepTimer += dt;
+      const left = Math.max(0, Math.ceil(step.timeLimit - this.stepTimer));
+      const m = this.current();
+      this.hooks.objective(m.title + ' — ' + step.text + '  [' + left + 's]');
+      if (this.stepTimer >= step.timeLimit) {
+        this.hooks.toast('Too slow — the buyer walked. Rico gives you another shot.');
+        this.stepIndex = 0;
+        this.enterStep();
       }
     }
   }
 
-  complete() {
-    const def = this.current;
-    this.active = false;
-    this.stage = 'done';
-    this.index++; // advance BEFORE the callback, so its save records the new index
-    this.cb.clearEnemies();
-    this.cb.onComplete(def);
-    this.markerPos = this.markerPosition();
+  advance() {
+    const m = this.current();
+    this.stepIndex += 1;
+    if (this.stepIndex >= m.steps.length) {
+      this.completeMission();
+    } else {
+      this.enterStep();
+    }
   }
 
-  fail(reason) {
-    const def = this.current;
-    this.active = false;
-    this.stage = 'idle';
-    this.cb.clearEnemies();
-    this.cb.onFail(def, reason);
+  completeMission() {
+    const reward = MISSION_REWARDS[this.missionIndex] || 0;
+    this.hooks.reward(reward);
+    this.hooks.toast('Mission complete! +' + '$' + reward);
+    // main.js increments the index and saves, in that order.
+    this.hooks.missionComplete(this.missionIndex, reward);
   }
 
-  /** Skip to the next mission (used after a fail, or R restarts the current one). */
-  retry() {
-    this.active = false;
-    this.stage = 'idle';
-    this.start();
-  }
-
-  stateForSave() { return { index: this.index, active: this.active }; }
-  loadState(s) {
-    if (!s) return;
-    this.index = Math.min(s.index || 0, MISSION_DEFS.length);
-    this.active = false;
-    this.markerPos = this.markerPosition();
+  // Called by main.js after it has incremented the index and saved.
+  afterComplete(nextIndex) {
+    this.missionIndex = nextIndex;
+    this.stepIndex = 0;
+    this.killsDone = 0;
+    this.stepTimer = 0;
+    if (this.missionIndex >= this.list.length) {
+      this.finishedAll = true;
+      this.active = false;
+      this.hooks.objective('Solmar Bay is yours. Thanks for playing!');
+      this.hooks.allDone();
+    } else {
+      this.enterStep();
+    }
   }
 }

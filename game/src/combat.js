@@ -1,221 +1,206 @@
-// Solmar Bay — combat: hitscan pistol with tracers, rival-gang enemies with
-// simple chase-and-shoot AI, melee punch, and a pooled particle burst system.
+// Solmar Bay — combat: pistol, punch, rival-gang AI that shoots back.
+// One job: shooting, melee, enemy health and the gang shootouts missions use.
+
 import * as THREE from 'three';
-import { makeRng, pick } from './config.js';
+import { clamp, mulberry32, pick } from './config.js';
 
-const ENEMY_SHIRTS = [0x8a1a1a, 0x5e1a8a, 0x1a5e3a];
-
-function makeEnemyMesh(rng) {
+function makeRivalMesh(isBoss) {
   const g = new THREE.Group();
-  const skin = new THREE.MeshStandardMaterial({ color: 0xc68642, roughness: 0.8 });
-  const shirt = new THREE.MeshStandardMaterial({ color: pick(rng, ENEMY_SHIRTS), roughness: 0.9 });
-  const pants = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.33, 10, 10), skin);
-  head.position.y = 1.62;
-  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.12, 10),
-    new THREE.MeshStandardMaterial({ color: 0x111111 }));
-  band.position.y = 1.8;
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.78, 0.36), shirt);
-  torso.position.y = 1.05;
-  const legs = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.7, 0.3), pants);
-  legs.position.y = 0.35;
-  head.castShadow = torso.castShadow = true;
-  g.add(head, band, torso, legs);
-  g.userData.hitRadius = 1.0;
+  const shirt = isBoss ? 0x8a1a1a : 0x3a3a4a;
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(isBoss ? 0.4 : 0.32, 0.6, 4, 8),
+    new THREE.MeshStandardMaterial({ color: shirt, roughness: 0.9 }));
+  torso.position.y = 1.05; torso.castShadow = true;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8),
+    new THREE.MeshStandardMaterial({ color: 0xc98a5a, roughness: 0.8 }));
+  head.position.y = 1.78;
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.5),
+    new THREE.MeshStandardMaterial({ color: 0x181818, roughness: 0.4, metalness: 0.6 }));
+  gun.position.set(0.35, 1.15, 0.4);
+  // Health bar above the head: green box that shrinks with damage.
+  const barBg = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.12, 0.02),
+    new THREE.MeshBasicMaterial({ color: 0x222222 }));
+  barBg.position.y = 2.25;
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.08, 0.03),
+    new THREE.MeshBasicMaterial({ color: isBoss ? 0xff3030 : 0x40d040 }));
+  bar.position.y = 2.25;
+  g.add(torso); g.add(head); g.add(gun); g.add(barBg); g.add(bar);
+  g.userData.bar = bar;
+  g.userData.barBg = barBg;
   return g;
 }
 
-/** Pooled burst particles: small glowing boxes with velocity + gravity + fade. */
-export class ParticleSystem {
-  constructor(scene, max = 240) {
+export class CombatSystem {
+  constructor(scene, audio) {
     this.scene = scene;
-    this.pool = [];
-    const geo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
-    for (let i = 0; i < max; i++) {
-      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true }));
-      m.visible = false;
-      scene.add(m);
-      this.pool.push({ mesh: m, life: 0, vel: new THREE.Vector3() });
-    }
-  }
-
-  burst(pos, color, count, speed, up = 2) {
-    let n = 0;
-    for (const p of this.pool) {
-      if (p.life > 0) continue;
-      p.life = 0.5 + Math.random() * 0.4;
-      p.mesh.visible = true;
-      p.mesh.position.copy(pos);
-      p.mesh.material.color.setHex(color);
-      p.mesh.material.opacity = 1;
-      p.vel.set((Math.random() - 0.5) * speed, Math.random() * up + 1, (Math.random() - 0.5) * speed);
-      if (++n >= count) break;
-    }
-  }
-
-  update(dt) {
-    for (const p of this.pool) {
-      if (p.life <= 0) continue;
-      p.life -= dt;
-      if (p.life <= 0) { p.mesh.visible = false; continue; }
-      p.vel.y -= 9 * dt;
-      p.mesh.position.addScaledVector(p.vel, dt);
-      p.mesh.material.opacity = Math.min(1, p.life * 2);
-      p.mesh.rotation.x += dt * 5; p.mesh.rotation.y += dt * 7;
-    }
-  }
-}
-
-/** Tracer lines for gunfire: short-lived stretched boxes. */
-export class TracerSystem {
-  constructor(scene) {
-    this.scene = scene;
-    this.tracers = [];
-    const geo = new THREE.BoxGeometry(0.06, 0.06, 1);
-    this.geo = geo;
-  }
-
-  fire(from, to, color = 0xffe08a) {
-    const m = new THREE.Mesh(this.geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 }));
-    const mid = from.clone().add(to).multiplyScalar(0.5);
-    m.position.copy(mid);
-    m.lookAt(to);
-    m.scale.z = from.distanceTo(to);
-    this.scene.add(m);
-    this.tracers.push({ mesh: m, life: 0.09 });
-  }
-
-  update(dt) {
-    for (let i = this.tracers.length - 1; i >= 0; i--) {
-      const t = this.tracers[i];
-      t.life -= dt;
-      if (t.life <= 0) { this.scene.remove(t.mesh); t.mesh.material.dispose(); this.tracers.splice(i, 1); }
-    }
-  }
-}
-
-export class CombatManager {
-  constructor(scene, particles, tracers, audio) {
-    this.scene = scene;
-    this.particles = particles;
-    this.tracers = tracers;
     this.audio = audio;
-    this.rng = makeRng(31337);
-    this.enemies = []; // {mesh,pos,hp,shootCd,heading,speed}
-    this.fireCd = 0;
+    this.ammo = 12;
+    this.ammoMax = 12;
+    this.reloadTimer = 0;
+    this.shootCooldown = 0;
+    this.punchCooldown = 0;
+    this.rivals = [];
+    this.raycaster = new THREE.Raycaster();
+    this.tracers = [];
+    this.rng = mulberry32(2026);
+    this.onRivalDown = null; // callback(rival) for missions
   }
 
-  spawnEnemies(center, count, radius = 12) {
+  spawnRivals(count, cx, cz, isBossFight) {
+    const made = [];
     for (let i = 0; i < count; i++) {
-      const mesh = makeEnemyMesh(this.rng);
-      const a = (i / count) * Math.PI * 2 + this.rng();
-      const x = center.x + Math.sin(a) * (radius * 0.5 + this.rng() * radius * 0.5);
-      const z = center.z + Math.cos(a) * (radius * 0.5 + this.rng() * radius * 0.5);
+      const a = (i / count) * Math.PI * 2 + this.rng() * 0.8;
+      const r = 16 + this.rng() * 8;
+      const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      const isBoss = isBossFight && i === 0;
+      const mesh = makeRivalMesh(isBoss);
       mesh.position.set(x, 0, z);
       this.scene.add(mesh);
-      this.enemies.push({ mesh, pos: mesh.position, hp: 100, shootCd: 1 + this.rng() * 2, heading: 0, speed: 4.2 });
+      const rival = {
+        mesh, pos: mesh.position, yaw: 0,
+        health: isBoss ? 220 : 60,
+        maxHealth: isBoss ? 220 : 60,
+        isBoss,
+        name: isBoss ? 'Marlo Kane' : pick(this.rng, ['Dagger', 'Rook', 'Vex', 'Hondo', 'Sable']),
+        shootTimer: 1 + this.rng() * 1.5,
+        moveTimer: 0,
+        alive: true,
+      };
+      this.rivals.push(rival);
+      made.push(rival);
     }
+    return made;
   }
 
-  clearEnemies() {
-    for (const e of this.enemies) this.scene.remove(e.mesh);
-    this.enemies = [];
+  livingRivals() { return this.rivals.filter((r) => r.alive); }
+
+  clearRivals() {
+    for (const r of this.rivals) this.scene.remove(r.mesh);
+    this.rivals = [];
   }
 
-  /** Player pistol shot. Returns 'enemy' | 'ped' | 'police' | 'miss' + hit point. */
-  playerShoot(origin, dir, peds, police) {
-    this.fireCd = 0.28;
-    this.audio.gunshot();
-    const ray = new THREE.Raycaster(origin, dir, 0.1, 120);
-    const targets = [];
-    for (const e of this.enemies) targets.push({ obj: e.mesh, kind: 'enemy', ref: e });
-    for (const p of peds.peds) targets.push({ obj: p.mesh, kind: 'ped', ref: p });
-    for (const o of police.officers) targets.push({ obj: o.mesh, kind: 'police', ref: o });
-    const meshes = targets.map((t) => t.obj);
-    const hits = ray.intersectObjects(meshes, true);
-    let end = origin.clone().addScaledVector(dir, 120);
-    let result = { kind: 'miss', point: end };
+  addTracer(from, to, color) {
+    const geo = new THREE.BufferGeometry().setFromPoints([from.clone(), to.clone()]);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: color || 0xffe9a0, transparent: true, opacity: 0.9 }));
+    this.scene.add(line);
+    this.tracers.push({ line, life: 0.12 });
+  }
+
+  // Player fires the pistol from `origin` along `dir`. Returns the rival hit, if any.
+  shoot(origin, dir, damagePlayer) {
+    if (this.shootCooldown > 0 || this.reloadTimer > 0) return null;
+    if (this.ammo <= 0) { this.startReload(); return null; }
+    this.shootCooldown = 0.22;
+    this.ammo -= 1;
+    this.audio.shot();
+    const targets = this.livingRivals().map((r) => r.mesh);
+    this.raycaster.set(origin, dir);
+    this.raycaster.far = 80;
+    const hits = this.raycaster.intersectObjects(targets, true);
+    const end = origin.clone().add(dir.clone().multiplyScalar(80));
     if (hits.length > 0) {
       const hit = hits[0];
-      end = hit.point.clone();
-      let node = hit.object;
-      while (node.parent && node.parent !== this.scene) node = node.parent;
-      const t = targets.find((x) => x.obj === node);
-      if (t) {
-        result = { kind: t.kind, point: end, ref: t.ref };
-        this.particles.burst(end, 0xff5544, 10, 5);
-        if (t.kind === 'enemy') {
-          t.ref.hp -= 34;
-          if (t.ref.hp <= 0) {
-            this.particles.burst(t.ref.pos.clone().setY(1), 0xff2222, 22, 7);
-            this.scene.remove(t.ref.mesh);
-            this.enemies.splice(this.enemies.indexOf(t.ref), 1);
-            result.killed = true;
-          }
+      end.copy(hit.point);
+      let rival = null;
+      for (const r of this.livingRivals()) {
+        if (r.mesh === hit.object || r.mesh.children.includes(hit.object) || hit.object.parent === r.mesh) { rival = r; break; }
+      }
+      if (!rival) {
+        // Walk up the parent chain to find the rival group.
+        let o = hit.object;
+        while (o && !rival) {
+          for (const r of this.livingRivals()) if (r.mesh === o) { rival = r; break; }
+          o = o.parent;
         }
       }
+      if (rival) {
+        this.damageRival(rival, 34);
+        this.addTracer(origin, end, 0xffd070);
+        return rival;
+      }
     }
-    this.tracers.fire(origin, end);
-    return result;
+    this.addTracer(origin, end, 0xfff2b0);
+    return null;
   }
 
-  /** Melee punch: hits the nearest enemy/ped/officer in front within 2.2 units. */
-  playerPunch(pos, heading, peds, police) {
+  damageRival(rival, dmg) {
+    if (!rival.alive) return;
+    rival.health -= dmg;
+    const frac = clamp(rival.health / rival.maxHealth, 0, 1);
+    rival.mesh.userData.bar.scale.x = Math.max(0.01, frac);
+    rival.mesh.userData.bar.position.x = -(1 - frac) * 0.5;
+    if (rival.health <= 0) {
+      rival.alive = false;
+      rival.mesh.rotation.z = Math.PI / 2;
+      rival.mesh.position.y = 0.4;
+      rival.mesh.userData.bar.visible = false;
+      rival.mesh.userData.barBg.visible = false;
+      if (this.onRivalDown) this.onRivalDown(rival);
+    }
+  }
+
+  // Punch: hits the nearest living rival within 2.6m of a point.
+  punch(fromPos) {
+    if (this.punchCooldown > 0) return null;
+    this.punchCooldown = 0.45;
     this.audio.punch();
-    const fx = Math.sin(heading), fz = Math.cos(heading);
-    const check = (list, kind) => {
-      for (const e of list) {
-        const p = e.pos || e.mesh.position;
-        const dx = p.x - pos.x, dz = p.z - pos.z;
-        const d = Math.hypot(dx, dz);
-        if (d < 2.4 && (dx * fx + dz * fz) / (d || 1) > 0.3) {
-          this.particles.burst(p.clone().setY(1.2), 0xffcc66, 8, 4);
-          return { kind, ref: e };
-        }
-      }
-      return null;
-    };
-    const eHit = check(this.enemies, 'enemy');
-    if (eHit) {
-      eHit.ref.hp -= 50;
-      if (eHit.ref.hp <= 0) {
-        this.scene.remove(eHit.ref.mesh);
-        this.enemies.splice(this.enemies.indexOf(eHit.ref), 1);
-        eHit.killed = true;
-      }
-      return eHit;
+    let best = null, bestD = 2.6;
+    for (const r of this.livingRivals()) {
+      const d = Math.hypot(r.pos.x - fromPos.x, r.pos.z - fromPos.z);
+      if (d < bestD) { bestD = d; best = r; }
     }
-    return check(peds.peds, 'ped') || check(police.officers, 'police');
+    if (best) this.damageRival(best, 25);
+    return best;
   }
 
-  /** Enemy AI: close in, strafe a little, shoot with inaccuracy. Returns hits on player. */
-  update(dt, playerPos, playerAlive, onPlayerHit) {
-    this.fireCd = Math.max(0, this.fireCd - dt);
-    for (const e of this.enemies) {
-      const dx = playerPos.x - e.pos.x, dz = playerPos.z - e.pos.z;
-      const dist = Math.hypot(dx, dz);
-      e.heading = Math.atan2(dx, dz);
-      if (dist > 14) {
-        e.pos.x += Math.sin(e.heading) * e.speed * dt;
-        e.pos.z += Math.cos(e.heading) * e.speed * dt;
-      } else if (dist < 7) {
-        e.pos.x -= Math.sin(e.heading) * e.speed * 0.5 * dt;
-        e.pos.z -= Math.cos(e.heading) * e.speed * 0.5 * dt;
+  startReload() {
+    if (this.reloadTimer > 0 || this.ammo === this.ammoMax) return;
+    this.reloadTimer = 1.1;
+  }
+
+  // Rival AI: strafe toward the player and shoot back with inaccuracy.
+  update(dt, playerPos, playerAlive, damagePlayer) {
+    this.shootCooldown = Math.max(0, this.shootCooldown - dt);
+    this.punchCooldown = Math.max(0, this.punchCooldown - dt);
+    if (this.reloadTimer > 0) {
+      this.reloadTimer -= dt;
+      if (this.reloadTimer <= 0) { this.ammo = this.ammoMax; this.reloadTimer = 0; }
+    }
+    for (const t of this.tracers) {
+      t.life -= dt;
+      if (t.life <= 0) { this.scene.remove(t.line); t.line.geometry.dispose(); }
+    }
+    this.tracers = this.tracers.filter((t) => t.life > 0);
+    if (!playerAlive) return;
+    for (const r of this.livingRivals()) {
+      const dx = playerPos.x - r.pos.x, dz = playerPos.z - r.pos.z;
+      const d = Math.hypot(dx, dz);
+      r.yaw = Math.atan2(dx, dz);
+      r.mesh.rotation.y = r.yaw;
+      r.moveTimer -= dt;
+      if (d > 14) {
+        // Close the distance.
+        r.pos.x += (dx / d) * 4.2 * dt;
+        r.pos.z += (dz / d) * 4.2 * dt;
+      } else if (d < 6) {
+        r.pos.x -= (dx / d) * 2 * dt;
+        r.pos.z -= (dz / d) * 2 * dt;
+      } else if (r.moveTimer <= 0) {
+        r.moveTimer = 0.8 + this.rng() * 1.2;
+        r.strafe = this.rng() < 0.5 ? -1 : 1;
       }
-      e.mesh.rotation.y = e.heading;
-      e.shootCd -= dt;
-      if (e.shootCd <= 0 && dist < 55 && playerAlive) {
-        e.shootCd = 1.4 + this.rng() * 1.2;
-        const from = e.pos.clone().setY(1.4);
-        const to = playerPos.clone().setY(1.2);
-        // Inaccurate: most shots miss, a few connect.
-        const miss = this.rng() < 0.55;
-        if (miss) {
-          to.x += (this.rng() - 0.5) * 6; to.z += (this.rng() - 0.5) * 6;
-        }
-        this.tracers.fire(from, to, 0xff8866);
-        this.audio.gunshot();
-        if (!miss) onPlayerHit(8 + Math.floor(this.rng() * 8), e.pos);
+      if (r.strafe && d <= 14 && d >= 6) {
+        r.pos.x += Math.cos(r.yaw) * r.strafe * 2.4 * dt;
+        r.pos.z -= Math.sin(r.yaw) * r.strafe * 2.4 * dt;
+      }
+      r.shootTimer -= dt;
+      if (r.shootTimer <= 0 && d < 45) {
+        r.shootTimer = (r.isBoss ? 0.9 : 1.5) + this.rng() * 1.2;
+        this.audio.enemyShot();
+        const from = r.pos.clone(); from.y = 1.3;
+        const to = new THREE.Vector3(playerPos.x + (this.rng() - 0.5) * 3, 1.2, playerPos.z + (this.rng() - 0.5) * 3);
+        this.addTracer(from, to, 0xff5040);
+        // Inaccuracy: only some shots land.
+        if (this.rng() < (r.isBoss ? 0.45 : 0.28)) damagePlayer(r.isBoss ? 14 : 9);
       }
     }
   }
