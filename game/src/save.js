@@ -1,36 +1,34 @@
-// Save: cash, mission progress and position persist in localStorage so a
-// session can be continued from the start screen.
+// Solmar Bay: localStorage save. One job: persist cash, mission progress,
+// health and position — and read them back. Nothing else touches storage.
 
-import { CONFIG } from './config.js';
+const SAVE_KEY = 'solmarbay-save-v1';
 
 export function saveGame(state) {
   try {
     const data = {
       version: 1,
-      savedAt: Date.now(),
-      cash: state.cash,
+      cash: Math.floor(state.cash),
       missionIndex: state.missionIndex,
-      missionsDone: state.missionsDone,
-      playerX: state.playerX,
-      playerZ: state.playerZ,
-      playerHeading: state.playerHeading,
-      health: state.health,
+      health: Math.round(state.health),
+      position: { x: state.playerX, y: state.playerY, z: state.playerZ },
+      yaw: state.playerYaw,
+      savedAt: Date.now(),
     };
-    localStorage.setItem(CONFIG.saveKey, JSON.stringify(data));
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     return true;
-  } catch (err) {
+  } catch (e) {
     return false;
   }
 }
 
 export function loadGame() {
   try {
-    const raw = localStorage.getItem(CONFIG.saveKey);
+    const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (!data || data.version !== 1) return null;
     return data;
-  } catch (err) {
+  } catch (e) {
     return null;
   }
 }
@@ -40,9 +38,5 @@ export function hasSave() {
 }
 
 export function clearSave() {
-  try {
-    localStorage.removeItem(CONFIG.saveKey);
-  } catch (err) {
-    // Storage unavailable; nothing to clear.
-  }
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* storage unavailable */ }
 }

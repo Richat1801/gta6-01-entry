@@ -1,166 +1,101 @@
-// Solmar Bay — Heat of the Coast: shared tuning, layout and story data.
-// Every other module reads its numbers from here so the whole game stays
-// in one place when the balance changes.
+// Solmar Bay — Heat of the Coast: shared tuning, palette and math helpers.
+// One job: every number the rest of the game agrees on lives here.
 
-export const CONFIG = {
-  // City grid: 8 x 8 blocks, roads on a 52-unit pitch, 12-unit road width.
-  pitch: 52,
-  blocks: 8,
-  roadWidth: 12,
-  blockSize: 40,
-  cityHalf: 208, // roads run from -208 to +208 on both axes
-  beachStart: 208, // sand strip east of the city
-  beachEnd: 262,
-  seaStart: 262,
-  seaEnd: 560,
-  // Player on foot
-  walkSpeed: 7,
-  sprintSpeed: 12,
-  jumpSpeed: 9,
-  gravity: 26,
-  playerRadius: 0.7,
-  playerHeight: 1.8,
-  // Driving
-  carAccel: 26,
-  carBrake: 42,
-  carMaxSpeed: 38,
-  carReverseMax: 12,
-  carTurnRate: 1.9,
-  // Wanted system
-  wantedDecayDelay: 18, // seconds of quiet before a star fades
-  wantedDecayStep: 12, // seconds per star once fading
-  maxWanted: 5,
-  // Combat
-  pistolDamage: 34,
-  pistolRange: 90,
-  pistolFireDelay: 0.22,
-  punchDamage: 20,
-  punchRange: 2.4,
-  playerMaxHealth: 100,
-  rivalHealth: 100,
-  // World population
-  parkedCars: 14,
-  trafficCars: 10,
-  pedestrians: 26,
-  // Clock: one game minute per real second, starting late morning
-  clockStartMinutes: 10 * 60 + 24,
-  dayLengthSeconds: 1440,
-  // Save
-  saveKey: 'solmar-bay-save-v1',
+export const CITY = {
+  blocks: 8,            // 8 x 8 blocks
+  blockSize: 40,        // building block, metres
+  roadWidth: 12,        // road surface, metres
+  pitch: 52,            // block + road
+  half: 208,            // half-extent of the road grid (8 * 52 / 2)
+  beachX: 208,          // sand starts here (east edge)
+  seaX: 268,            // water starts here
+  worldHalf: 340,       // hard playfield clamp
 };
 
-// Named places the missions and the HUD point at. All coordinates are world
-// units on the ground plane (y = 0).
-export const PLACES = {
-  ricosGarage: { x: -156, z: -156, label: "Rico's Garage" },
-  beachfront: { x: 226, z: 96, label: 'Solmar Beachfront' },
-  marinaContact: { x: -104, z: 156, label: 'Marina Contact' },
-  dropPoint: { x: 156, z: -104, label: 'North Drop Point' },
-  safehouse: { x: -156, z: -182, label: 'Safehouse' },
-  docks: { x: -182, z: 182, label: 'South Docks' },
-  bayBank: { x: 26, z: 26, label: 'Bay Bank' },
-  hideout: { x: -104, z: -104, label: 'Hideout' },
-  palmsPlaza: { x: 26, z: 26, label: 'Palms Plaza' },
+export const PLAYER = {
+  walkSpeed: 6.5,
+  sprintSpeed: 11,
+  jumpSpeed: 8.5,
+  gravity: 24,
+  radius: 0.6,
+  height: 1.8,
+  maxHealth: 100,
 };
 
-// The five chained story missions from fixer Rico Vane. Each mission is a
-// list of steps; a step completes when the player reaches its marker (drive
-// or on foot), survives its timer, or eliminates its targets.
-export const MISSION_DEFS = [
-  {
-    id: 1,
-    title: 'First Wheels',
-    giver: 'Rico Vane',
-    intro: 'Rico needs wheels. Steal any parked car and bring it to the beachfront.',
-    reward: 500,
-    steps: [
-      { type: 'steal', text: 'Steal a parked car (walk up and press E)', radius: 4 },
-      { type: 'drive', pos: PLACES.beachfront, text: 'Drive to the Solmar Beachfront', radius: 10 },
-    ],
-  },
-  {
-    id: 2,
-    title: 'The Pickup',
-    giver: 'Rico Vane',
-    intro: 'A package is waiting at the marina. Pick it up and drop it north.',
-    reward: 800,
-    steps: [
-      { type: 'goto', pos: PLACES.marinaContact, text: 'Pick up the package at the Marina', radius: 6 },
-      { type: 'drive', pos: PLACES.dropPoint, text: 'Deliver the package to the North Drop', radius: 8 },
-    ],
-  },
-  {
-    id: 3,
-    title: 'Hot Pursuit',
-    giver: 'Rico Vane',
-    intro: 'The heat is on. Lose the cops and reach the safehouse in one piece.',
-    reward: 1200,
-    steps: [
-      { type: 'survive', seconds: 45, wanted: 3, text: 'Survive the heat for 45 seconds', radius: 0 },
-      { type: 'drive', pos: PLACES.safehouse, text: 'Reach the Safehouse', radius: 10 },
-    ],
-  },
-  {
-    id: 4,
-    title: 'Dockside Shootout',
-    giver: 'Rico Vane',
-    intro: 'Rivals moved on the docks. Clear them out — pistol ready.',
-    reward: 2000,
-    steps: [
-      { type: 'goto', pos: PLACES.docks, text: 'Head to the South Docks', radius: 8 },
-      { type: 'eliminate', count: 4, text: 'Eliminate the rival crew (4)', radius: 0 },
-    ],
-  },
-  {
-    id: 5,
-    title: 'The Bay Heist',
-    giver: 'Rico Vane',
-    intro: 'One last job: hit the Bay Bank, grab the cash, vanish.',
-    reward: 5000,
-    steps: [
-      { type: 'goto', pos: PLACES.bayBank, text: 'Reach the Bay Bank', radius: 8 },
-      { type: 'grab', text: 'Grab the cash (stand in the vault marker)', radius: 6 },
-      { type: 'escape', wanted: 3, pos: PLACES.hideout, text: 'Escape the heat — reach the Hideout', radius: 10 },
-    ],
-  },
-];
+export const CAR = {
+  accel: 22,
+  brake: 34,
+  reverseAccel: 12,
+  maxSpeed: 38,
+  maxReverse: 10,
+  turnRate: 1.9,
+  drag: 0.6,
+};
 
-// Warm coastal palette: sun-bleached walls, teal sea, coral accents.
+export const WANTED = {
+  decaySeconds: 26,     // quiet seconds before one star fades
+  maxStars: 5,
+  stealStars: 1,
+  hitPedStars: 2,
+  shootStars: 1,
+  killStars: 2,
+};
+
 export const PALETTE = {
-  sky: 0x87c5e8,
-  sun: 0xfff2d0,
-  sea: 0x1e7fa8,
-  sand: 0xe8d3a2,
-  asphalt: 0x3a3f46,
+  sky: 0x8ec9e8,
+  fog: 0xa8d4e6,
+  sun: 0xfff2d8,
+  ground: 0x9aa08a,
+  road: 0x3a3f46,
   sidewalk: 0xb9b3a4,
-  grass: 0x5da24a,
-  buildings: [0xe8b4a0, 0xf2d8a7, 0xa7c8e8, 0xd8a7c8, 0xf5f0e6, 0x9fc8b8, 0xe8c8a0, 0xc8b8e8],
-  carPaint: [0xd23c2e, 0x2e6fd2, 0xf2c230, 0x222831, 0xe8e8e8, 0x2ea86a, 0x8a4fd2, 0xe87a2e],
-  palmTrunk: 0x7a5230,
-  palmLeaf: 0x3f9e4d,
+  sand: 0xe8d29a,
+  sea: 0x1e7fa8,
+  building: [0xe8b48a, 0xd98a7a, 0x9ab8c9, 0xc9c2a8, 0xb08a9e, 0x8fb8a0, 0xe0d0b0, 0x7a9cc0],
+  car: [0xc0392b, 0x2e86c1, 0xf1c40f, 0x27ae60, 0x8e44ad, 0xe67e22, 0xecf0f1, 0x1a1a2e],
+  palm: 0x2e8b57,
+  lightPole: 0x2c3e50,
 };
 
-// Small math helpers shared by every module.
-export function clamp(value, min, max) {
-  return value < min ? min : value > max ? max : value;
+// --- small math helpers -----------------------------------------------------
+
+export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function rand(a = 1, b) {
+  if (b === undefined) { b = a; a = 0; }
+  return a + Math.random() * (b - a);
 }
-export function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-export function rand(min, max) {
-  return min + Math.random() * (max - min);
-}
-export function randPick(list) {
-  return list[Math.floor(Math.random() * list.length)];
-}
-export function distance2D(ax, az, bx, bz) {
-  const dx = ax - bx;
-  const dz = az - bz;
+export function randInt(a, b) { return Math.floor(rand(a, b + 1)); }
+export function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+export function dist2(ax, az, bx, bz) {
+  const dx = ax - bx, dz = az - bz;
   return Math.sqrt(dx * dx + dz * dz);
 }
 export function angleLerp(a, b, t) {
-  let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
   return a + d * t;
+}
+export function formatCash(n) {
+  return '$' + Math.floor(n).toLocaleString('en-US');
+}
+export function formatClock(minutes) {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = Math.floor(minutes % 60);
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+// Road centre lines: roads run between blocks, at x or z = (i - 3.5) * pitch.
+export function roadCentres() {
+  const out = [];
+  for (let i = 0; i < CITY.blocks; i++) out.push((i - 3.5) * CITY.pitch);
+  return out;
+}
+export function nearestRoadCentre(v) {
+  let best = roadCentres()[0], bd = Infinity;
+  for (const c of roadCentres()) {
+    const d = Math.abs(v - c);
+    if (d < bd) { bd = d; best = c; }
+  }
+  return best;
 }

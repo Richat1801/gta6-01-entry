@@ -1,102 +1,88 @@
-// Input: keyboard state, mouse-look with pointer lock plus a drag fallback,
-// and edge-triggered action presses (E, F, 1, P, M, Space).
+// Solmar Bay: keyboard + mouse input. One job: raw device state, nothing else.
+// The game reads keys by code; mouse-look deltas accumulate until consumed.
 
-export class InputManager {
+export class Input {
   constructor(canvas) {
     this.canvas = canvas;
     this.keys = new Set();
-    this.pressed = new Set(); // edge-triggered, consumed each frame
     this.mouseDX = 0;
     this.mouseDY = 0;
     this.mouseDown = false;
-    this.dragging = false;
+    this.mouseClicked = false;
     this.pointerLocked = false;
-    this.shootHeld = false;
-    this.onFirstGesture = null;
-    this.attach();
-  }
-
-  attach() {
-    window.addEventListener('keydown', (e) => {
-      if (e.repeat) return;
+    this._onKeyDown = (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       this.keys.add(e.code);
-      this.pressed.add(e.code);
-      if (this.onFirstGesture) this.onFirstGesture();
-      // Keep Space / arrows from scrolling the page.
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
-        e.preventDefault();
-      }
-    });
-    window.addEventListener('keyup', (e) => {
-      this.keys.delete(e.code);
-    });
-    window.addEventListener('blur', () => {
-      this.keys.clear();
-    });
-    document.addEventListener('pointerlockchange', () => {
-      this.pointerLocked = document.pointerLockElement === this.canvas;
-    });
-    document.addEventListener('mousemove', (e) => {
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
+    };
+    this._onKeyUp = (e) => this.keys.delete(e.code);
+    this._onMouseMove = (e) => {
       if (this.pointerLocked) {
-        this.mouseDX += e.movementX;
-        this.mouseDY += e.movementY;
-      } else if (this.dragging) {
-        this.mouseDX += e.movementX;
-        this.mouseDY += e.movementY;
+        this.mouseDX += e.movementX || 0;
+        this.mouseDY += e.movementY || 0;
       }
-    });
-    this.canvas.addEventListener('mousedown', (e) => {
-      this.mouseDown = true;
-      if (e.button === 0) this.shootHeld = true;
-      if (this.onFirstGesture) this.onFirstGesture();
-      if (!this.pointerLocked) {
-        this.dragging = true;
-        // Pointer lock on click for real mouse-look; drag still works if it fails.
-        try {
-          this.canvas.requestPointerLock();
-        } catch (err) {
-          // Headless or denied: drag fallback stays active.
-        }
-      }
-    });
-    window.addEventListener('mouseup', (e) => {
-      this.mouseDown = false;
-      if (e.button === 0) this.shootHeld = false;
-      this.dragging = false;
-    });
-    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    };
+    this._onMouseDown = (e) => {
+      if (e.button === 0) { this.mouseDown = true; this.mouseClicked = true; }
+    };
+    this._onMouseUp = (e) => { if (e.button === 0) this.mouseDown = false; };
+    this._onLockChange = () => {
+      this.pointerLocked = document.pointerLockElement === this.canvas;
+    };
+    this._onBlur = () => { this.keys.clear(); this.mouseDown = false; };
+    window.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('keyup', this._onKeyUp);
+    window.addEventListener('mousemove', this._onMouseMove);
+    window.addEventListener('mousedown', this._onMouseDown);
+    window.addEventListener('mouseup', this._onMouseUp);
+    document.addEventListener('pointerlockchange', this._onLockChange);
+    window.addEventListener('blur', this._onBlur);
   }
 
-  down(code) {
-    return this.keys.has(code);
-  }
+  down(code) { return this.keys.has(code); }
 
-  // True once, on the frame the key went down.
-  wasPressed(code) {
-    return this.pressed.has(code);
+  // WASD / arrows as a -1..1 pair, already normalised.
+  moveAxes() {
+    let x = 0, y = 0;
+    if (this.down('KeyW') || this.down('ArrowUp')) y += 1;
+    if (this.down('KeyS') || this.down('ArrowDown')) y -= 1;
+    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
+    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
+    const len = Math.hypot(x, y);
+    if (len > 1) { x /= len; y /= len; }
+    return { x, y };
   }
 
   consumeMouse() {
-    const dx = this.mouseDX;
-    const dy = this.mouseDY;
-    this.mouseDX = 0;
-    this.mouseDY = 0;
+    const dx = this.mouseDX, dy = this.mouseDY;
+    this.mouseDX = 0; this.mouseDY = 0;
     return { dx, dy };
   }
 
-  endFrame() {
-    this.pressed.clear();
+  consumeClick() {
+    const c = this.mouseClicked;
+    this.mouseClicked = false;
+    return c;
   }
 
-  // Movement axes in camera space: forward/back/left/right, sprint, jump.
-  moveAxes() {
-    return {
-      forward: this.down('KeyW') || this.down('ArrowUp'),
-      back: this.down('KeyS') || this.down('ArrowDown'),
-      left: this.down('KeyA') || this.down('ArrowLeft'),
-      right: this.down('KeyD') || this.down('ArrowRight'),
-      sprint: this.down('ShiftLeft') || this.down('ShiftRight'),
-      jump: this.down('Space'),
-    };
+  // Edge-triggered key: true once per physical press.
+  pressed(code) {
+    if (this.keys.has(code) && !this._prevPressed.has(code)) {
+      this._prevPressed.add(code);
+      return true;
+    }
+    if (!this.keys.has(code)) this._prevPressed.delete(code);
+    return false;
+  }
+
+  lockPointer() {
+    if (!this.pointerLocked && this.canvas.requestPointerLock) {
+      try { this.canvas.requestPointerLock(); } catch (e) { /* pointer lock unavailable */ }
+    }
+  }
+
+  unlockPointer() {
+    if (document.pointerLockElement) document.exitPointerLock();
   }
 }
+Input.prototype._prevPressed = new Set();

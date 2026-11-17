@@ -1,245 +1,202 @@
-// Combat: fists and pistol, rival-gang shooters, muzzle flash, hit
-// markers, tracer lines and the player's health.
+// Solmar Bay: combat. One job: punch + pistol for the player, rival-gang
+// shooters who fight back, tracers, muzzle flash and hit markers.
 
 import * as THREE from 'three';
-import { CONFIG, rand, distance2D } from './config.js';
+import { clamp, dist2, rand, pick } from './config.js';
 
-export class Rival {
-  constructor(scene, x, z) {
-    this.scene = scene;
-    this.health = CONFIG.rivalHealth;
-    this.shootCooldown = rand(0.6, 1.6);
-    this.mesh = buildRivalMesh();
-    this.mesh.position.set(x, 0, z);
-    scene.add(this.mesh);
-    this.phase = rand(0, 6);
-  }
+const GANG_NAMES = ['Vex', 'Marlo', 'Dante', 'Rook', 'Sable', 'Kane'];
 
-  takeDamage(amount) {
-    this.health -= amount;
-    return this.health <= 0;
-  }
-}
-
-function buildRivalMesh() {
-  const group = new THREE.Group();
-  const jacket = new THREE.MeshStandardMaterial({ color: 0x8a1f2e, roughness: 0.85 });
-  const skin = new THREE.MeshStandardMaterial({ color: 0xd9a066, roughness: 0.8 });
-  const pants = new THREE.MeshStandardMaterial({ color: 0x222831, roughness: 0.9 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.34), jacket);
-  body.position.y = 1.05;
-  body.castShadow = true;
-  group.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), skin);
+function makeGangMesh() {
+  const g = new THREE.Group();
+  const shirt = new THREE.MeshLambertMaterial({ color: pick([0x7b241c, 0x4a235a, 0x1a1a1a]) });
+  const legs = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.8, 0.2), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+  legs.position.y = 0.4;
+  g.add(legs);
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.62, 0.28), shirt);
+  torso.position.y = 1.11;
+  torso.castShadow = true;
+  g.add(torso);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.19, 10, 8), new THREE.MeshLambertMaterial({ color: pick([0xf1c27d, 0xc68642, 0x8d5524]) }));
   head.position.y = 1.62;
-  group.add(head);
-  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.08, 10), jacket);
+  g.add(head);
+  const band = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.08, 0.4), new THREE.MeshBasicMaterial({ color: 0xd4ac0d }));
   band.position.y = 1.74;
-  group.add(band);
-  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.65, 0.22), pants);
-  legL.position.set(-0.14, 0.33, 0);
-  group.add(legL);
-  const legR = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.65, 0.22), pants);
-  legR.position.set(0.14, 0.33, 0);
-  group.add(legR);
-  // Pistol in hand
-  const gun = new THREE.Mesh(
-    new THREE.BoxGeometry(0.08, 0.12, 0.42),
-    new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.4, metalness: 0.6 }),
-  );
-  gun.position.set(0.34, 1.1, 0.2);
-  group.add(gun);
-  group.userData = { legL, legR };
-  return group;
+  g.add(band);
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.4), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+  gun.position.set(0.28, 1.2, 0.3);
+  g.add(gun);
+  return g;
 }
 
 export class CombatSystem {
-  constructor(scene, hooks) {
+  constructor(scene, callbacks) {
     this.scene = scene;
-    this.hooks = hooks; // { onShoot, onHit, onPlayerDamage, onRivalKilled, onCrime }
-    this.rivals = [];
+    this.cb = callbacks; // { onPlayerDamage, onGangDown, onShoot, onScare }
+    this.weapon = 'fists'; // 'fists' | 'pistol'
+    this.ammo = 48;
+    this.pistolUnlocked = true;
+    this.cooldown = 0;
+    this.gang = []; // active rival shooters
     this.tracers = [];
-    this.muzzle = buildMuzzleFlash();
-    this.muzzle.visible = false;
-    scene.add(this.muzzle);
+    this.muzzle = new THREE.PointLight(0xffc266, 0, 14);
+    this.scene.add(this.muzzle);
     this.muzzleTimer = 0;
-    this.fireCooldown = 0;
-    this.punchCooldown = 0;
-    this.pistolEquipped = false;
-    this.raycaster = new THREE.Raycaster();
-    this.flashLight = new THREE.PointLight(0xffc860, 0, 14);
-    scene.add(this.flashLight);
+    this.hitmarkTimer = 0;
   }
 
-  spawnRivals(count, cx, cz) {
+  switchWeapon(name) {
+    if (name === 'pistol' && !this.pistolUnlocked) return false;
+    this.weapon = name;
+    return true;
+  }
+
+  spawnGang(count, centreX, centreZ, radius) {
     for (let i = 0; i < count; i++) {
+      const mesh = makeGangMesh();
       const a = rand(0, Math.PI * 2);
-      const r = rand(6, 16);
-      this.rivals.push(new Rival(this.scene, cx + Math.cos(a) * r, cz + Math.sin(a) * r));
+      const r = rand(2, radius);
+      mesh.position.set(centreX + Math.sin(a) * r, 0, centreZ + Math.cos(a) * r);
+      this.scene.add(mesh);
+      this.gang.push({
+        mesh, name: pick(GANG_NAMES), health: 60, shootTimer: rand(0.5, 1.5),
+        moveTimer: rand(1, 3), strafeDir: Math.random() < 0.5 ? 1 : -1,
+      });
     }
   }
 
-  clearRivals() {
-    for (const r of this.rivals) this.scene.remove(r.mesh);
-    this.rivals = [];
+  clearGang() {
+    for (const g of this.gang) this.scene.remove(g.mesh);
+    this.gang = [];
   }
 
-  rivalCount() {
-    return this.rivals.length;
+  gangAlive() {
+    return this.gang.length;
   }
 
-  // Player fires the pistol from the camera toward the crosshair.
-  shoot(camera, playerPos) {
-    if (this.fireCooldown > 0 || !this.pistolEquipped) return;
-    this.fireCooldown = CONFIG.pistolFireDelay;
-    this.hooks.onShoot();
-    this.hooks.onCrime(1, 'shots fired');
-    // Muzzle flash at the camera, briefly.
-    this.muzzle.visible = true;
-    this.muzzleTimer = 0.06;
-    this.muzzle.position.copy(camera.position);
-    this.muzzle.position.addScaledVector(new THREE.Vector3(0, -0.25, 0), 1);
-    this.flashLight.position.copy(camera.position);
-    this.flashLight.intensity = 24;
-    // Raycast against rivals (sphere test on their chest).
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    let hitRival = null;
-    let hitDist = CONFIG.pistolRange;
-    for (const rival of this.rivals) {
-      const to = new THREE.Vector3().subVectors(rival.mesh.position, camera.position);
-      to.y += 1.2;
+  // Player attacks toward a world point (camera aim). Returns 'hit' | 'miss' | 'none'.
+  playerAttack(origin, aimPoint, peds, police) {
+    if (this.cooldown > 0) return 'none';
+    if (this.weapon === 'pistol') {
+      if (this.ammo <= 0) { this.cooldown = 0.4; return 'none'; }
+      this.ammo--;
+      this.cooldown = 0.28;
+      this._fireTracer(origin, aimPoint, 0xffe08a);
+      this.muzzle.position.copy(origin);
+      this.muzzle.intensity = 26;
+      this.muzzleTimer = 0.06;
+      if (this.cb.onShoot) this.cb.onShoot(origin, aimPoint);
+      const hit = this._rayHit(origin, aimPoint);
+      if (hit) {
+        this.hitmarkTimer = 0.25;
+        return 'hit';
+      }
+      return 'miss';
+    }
+    // Fists: short arc in front of the aim point's ground position.
+    this.cooldown = 0.45;
+    if (this.cb.onPunch) this.cb.onPunch();
+    const hit = this._meleeHit(aimPoint, peds);
+    if (hit) this.hitmarkTimer = 0.25;
+    return hit ? 'hit' : 'miss';
+  }
+
+  _rayHit(origin, aimPoint) {
+    // Gang members first.
+    let best = null, bd = Infinity;
+    const dir = new THREE.Vector3().subVectors(aimPoint, origin).normalize();
+    for (const g of this.gang) {
+      const to = new THREE.Vector3().subVectors(g.mesh.position.clone().add(new THREE.Vector3(0, 1.2, 0)), origin);
       const along = to.dot(dir);
-      if (along < 0 || along > hitDist) continue;
-      const closest = new THREE.Vector3().copy(dir).multiplyScalar(along).add(camera.position);
-      const chest = rival.mesh.position.clone();
-      chest.y += 1.2;
-      if (closest.distanceTo(chest) < 1.4) {
-        hitRival = rival;
-        hitDist = along;
-      }
+      if (along < 0 || along > 120) continue;
+      const perp = to.clone().addScaledVector(dir, -along).length();
+      if (perp < 1.1 && along < bd) { bd = along; best = { kind: 'gang', ref: g }; }
     }
-    const end = new THREE.Vector3().copy(camera.position).addScaledVector(dir, hitDist);
-    this.spawnTracer(camera.position.clone().addScaledVector(dir, 1.2), end);
-    if (hitRival) {
-      this.hooks.onHit();
-      const dead = hitRival.takeDamage(CONFIG.pistolDamage);
-      if (dead) {
-        this.scene.remove(hitRival.mesh);
-        this.rivals = this.rivals.filter((r) => r !== hitRival);
-        this.hooks.onRivalKilled(hitRival);
+    if (best) {
+      best.ref.health -= 34;
+      if (best.ref.health <= 0) {
+        this.scene.remove(best.ref.mesh);
+        this.gang.splice(this.gang.indexOf(best.ref), 1);
+        if (this.cb.onGangDown) this.cb.onGangDown(best.ref);
       }
+      return true;
     }
+    return false;
   }
 
-  // A close-range punch: damages the nearest rival in front of the player.
-  punch(playerPos, playerHeading) {
-    if (this.punchCooldown > 0) return;
-    this.punchCooldown = 0.45;
-    this.hooks.onShoot('punch');
-    const fx = Math.sin(playerHeading);
-    const fz = Math.cos(playerHeading);
-    for (const rival of [...this.rivals]) {
-      const dx = rival.mesh.position.x - playerPos.x;
-      const dz = rival.mesh.position.z - playerPos.z;
-      const d = Math.hypot(dx, dz);
-      if (d > CONFIG.punchRange) continue;
-      const facing = (dx * fx + dz * fz) / Math.max(d, 0.01);
-      if (facing < 0.3) continue;
-      const dead = rival.takeDamage(CONFIG.punchDamage);
-      this.hooks.onHit();
-      if (dead) {
-        this.scene.remove(rival.mesh);
-        this.rivals = this.rivals.filter((r) => r !== rival);
-        this.hooks.onRivalKilled(rival);
+  _meleeHit(aimPoint, peds) {
+    let hit = false;
+    for (const g of this.gang) {
+      if (dist2(aimPoint.x, aimPoint.z, g.mesh.position.x, g.mesh.position.z) < 2.4) {
+        g.health -= 25;
+        if (g.health <= 0) {
+          this.scene.remove(g.mesh);
+          this.gang.splice(this.gang.indexOf(g), 1);
+          if (this.cb.onGangDown) this.cb.onGangDown(g);
+        }
+        hit = true;
       }
-      return;
     }
+    if (peds) {
+      for (const p of peds.peds || []) {
+        if (!p.down && dist2(aimPoint.x, aimPoint.z, p.mesh.position.x, p.mesh.position.z) < 2.2) {
+          peds.knockDown(p);
+          if (this.cb.onPedPunched) this.cb.onPedPunched(p);
+          hit = true;
+        }
+      }
+    }
+    return hit;
   }
 
-  spawnTracer(from, to) {
-    const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
-    const line = new THREE.Line(
-      geo,
-      new THREE.LineBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.95 }),
-    );
+  _fireTracer(from, to, color) {
+    const geo = new THREE.BufferGeometry().setFromPoints([from.clone(), to.clone()]);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
     this.scene.add(line);
     this.tracers.push({ line, life: 0.09 });
   }
 
-  // Rivals strafe, keep distance and shoot back with wild aim.
-  updateRivals(dt, playerPos, playerInCar) {
-    for (const rival of this.rivals) {
-      const dx = playerPos.x - rival.mesh.position.x;
-      const dz = playerPos.z - rival.mesh.position.z;
-      const dist = Math.hypot(dx, dz);
-      rival.mesh.rotation.y = Math.atan2(dx, dz);
-      // Strafe sideways while keeping roughly 10–18 units away.
-      rival.phase += dt;
-      const strafe = Math.sin(rival.phase * 1.4) * 2.2;
-      if (dist > 18) {
-        rival.mesh.position.x += (dx / dist) * 4.4 * dt;
-        rival.mesh.position.z += (dz / dist) * 4.4 * dt;
-      } else if (dist < 8) {
-        rival.mesh.position.x -= (dx / dist) * 3 * dt;
-        rival.mesh.position.z -= (dz / dist) * 3 * dt;
-      }
-      rival.mesh.position.x += Math.cos(rival.mesh.rotation.y) * strafe * dt;
-      rival.mesh.position.z -= Math.sin(rival.mesh.rotation.y) * strafe * dt;
-      const swing = Math.sin(rival.phase * 6) * 0.4;
-      rival.mesh.userData.legL.rotation.x = swing;
-      rival.mesh.userData.legR.rotation.x = -swing;
-      // Shoot back: inaccurate, damage falls off with distance.
-      rival.shootCooldown -= dt;
-      if (rival.shootCooldown <= 0 && dist < 55 && !playerInCar) {
-        rival.shootCooldown = rand(1.1, 2.2);
-        const from = rival.mesh.position.clone();
-        from.y = 1.3;
-        const to = new THREE.Vector3(playerPos.x + rand(-2.5, 2.5), 1.2, playerPos.z + rand(-2.5, 2.5));
-        this.spawnTracer(from, to);
-        this.hooks.onShoot('rival');
-        if (Math.random() < 0.42) {
-          this.hooks.onPlayerDamage(rand(5, 11));
-        }
-      }
-    }
-  }
-
-  update(dt) {
-    this.fireCooldown = Math.max(0, this.fireCooldown - dt);
-    this.punchCooldown = Math.max(0, this.punchCooldown - dt);
+  update(dt, playerPos, playerHealth) {
+    this.cooldown = Math.max(0, this.cooldown - dt);
+    this.hitmarkTimer = Math.max(0, this.hitmarkTimer - dt);
     if (this.muzzleTimer > 0) {
       this.muzzleTimer -= dt;
-      if (this.muzzleTimer <= 0) this.muzzle.visible = false;
+      if (this.muzzleTimer <= 0) this.muzzle.intensity = 0;
     }
-    this.flashLight.intensity = Math.max(0, this.flashLight.intensity - dt * 320);
-    for (const t of [...this.tracers]) {
+    for (let i = this.tracers.length - 1; i >= 0; i--) {
+      const t = this.tracers[i];
       t.life -= dt;
       if (t.life <= 0) {
         this.scene.remove(t.line);
         t.line.geometry.dispose();
-        this.tracers = this.tracers.filter((x) => x !== t);
+        this.tracers.splice(i, 1);
+      }
+    }
+    // Gang AI: strafe, keep range, shoot back.
+    for (const g of this.gang) {
+      const dx = playerPos.x - g.mesh.position.x;
+      const dz = playerPos.z - g.mesh.position.z;
+      const d = Math.max(0.01, Math.hypot(dx, dz));
+      g.mesh.rotation.y = Math.atan2(dx, dz);
+      g.moveTimer -= dt;
+      if (g.moveTimer <= 0) {
+        g.moveTimer = rand(1.5, 3.5);
+        g.strafeDir *= -1;
+      }
+      const want = d > 16 ? 3.2 : d < 8 ? -2.4 : 0;
+      g.mesh.position.x += (dx / d) * want * dt + Math.cos(g.mesh.rotation.y) * g.strafeDir * 1.6 * dt;
+      g.mesh.position.z += (dz / d) * want * dt - Math.sin(g.mesh.rotation.y) * g.strafeDir * 1.6 * dt;
+      g.shootTimer -= dt;
+      if (g.shootTimer <= 0 && d < 42) {
+        g.shootTimer = rand(0.9, 1.9);
+        const from = g.mesh.position.clone().add(new THREE.Vector3(0, 1.3, 0));
+        const to = new THREE.Vector3(playerPos.x + rand(-1, 1), 1.2, playerPos.z + rand(-1, 1));
+        this._fireTracer(from, to, 0xff5544);
+        this.muzzle.position.copy(from);
+        this.muzzle.intensity = 14;
+        this.muzzleTimer = 0.05;
+        if (Math.random() < 0.55 && this.cb.onPlayerDamage) this.cb.onPlayerDamage(rand(4, 9), 'shot by ' + g.name);
+        if (this.cb.onEnemyShot) this.cb.onEnemyShot();
       }
     }
   }
-}
-
-function buildMuzzleFlash() {
-  const group = new THREE.Group();
-  const mat = new THREE.MeshBasicMaterial({ color: 0xffd76a, transparent: true, opacity: 0.95 });
-  const star = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.7), mat);
-  const star2 = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.7), mat);
-  star2.rotation.z = Math.PI / 4;
-  group.add(star);
-  group.add(star2);
-  return group;
-}
-
-// Distance from the player to the nearest rival (for the HUD threat readout).
-export function nearestRivalDistance(rivals, x, z) {
-  let best = Infinity;
-  for (const r of rivals) {
-    best = Math.min(best, distance2D(x, z, r.mesh.position.x, r.mesh.position.z));
-  }
-  return best;
 }

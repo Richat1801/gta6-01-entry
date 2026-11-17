@@ -1,34 +1,58 @@
-// Solmar Bay — Heat of the Coast: entry program (Node 22, stdlib only).
-// Copies the playable game and its screenshots from this repository into
-// the output directory and writes the dossier buildDossier produces from
-// them, so the sealed scorer can check the hand-in byte for byte.
-//
-// Run it yourself with:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-// Outside the grader MAKEFUN_OUTPUT_DIR stands in for /output; with no
-// variable set the program writes to /output, as the grader expects.
+// Solmar Bay — Heat of the Coast: entrypoint for make.fun (Node 22, stdlib only).
+// Copies game/ and screenshots/ from this repository into the output directory
+// and writes /output/dossier.json with buildDossier from vendor/makefun-game.ts.
+// Runs twice with byte-identical output: fixed file order, no timestamps.
 
-import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const repoRoot = dirname(fileURLToPath(import.meta.url));
-const outDir = process.env.MAKEFUN_OUTPUT_DIR || '/output';
-const gameDir = join(repoRoot, 'game');
-const shotsDir = join(repoRoot, 'screenshots');
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)));
+const OUTPUT_DIR = resolve(process.env.MAKEFUN_OUTPUT_DIR || '/output');
 
-rmSync(outDir, { recursive: true, force: true });
-mkdirSync(join(outDir, 'game'), { recursive: true });
-mkdirSync(join(outDir, 'screenshots'), { recursive: true });
-cpSync(gameDir, join(outDir, 'game'), { recursive: true });
-cpSync(shotsDir, join(outDir, 'screenshots'), { recursive: true });
+function copyTreeSorted(srcDir: string, destDir: string): void {
+  mkdirSync(destDir, { recursive: true });
+  const entries = readdirSync(srcDir, { withFileTypes: true })
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const entry of entries) {
+    const src = join(srcDir, entry.name);
+    const dest = join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyTreeSorted(src, dest);
+    } else if (entry.isFile()) {
+      cpSync(src, dest);
+    }
+    // Symlinks and anything else are skipped: the gate wants plain files only.
+  }
+}
 
-const dossier = buildDossier(outDir, {
-  text_max_bytes: 163840,
-  screenshots: { max: 4, max_bytes: 262144 },
-  game_max_files: 993,
-  game_max_bytes: 50331648,
-});
-writeFileSync(join(outDir, 'dossier.json'), dossier);
-console.log(`Solmar Bay handed in: ${dossier.length} byte dossier in ${outDir}`);
+function main(): void {
+  const gameSrc = join(REPO_ROOT, 'game');
+  const shotsSrc = join(REPO_ROOT, 'screenshots');
+  if (!existsSync(gameSrc) || !statSync(gameSrc).isDirectory()) {
+    throw new Error('main.ts: game/ is missing from the repository');
+  }
+  if (!existsSync(join(gameSrc, 'index.html'))) {
+    throw new Error('main.ts: game/index.html is missing');
+  }
+  if (!existsSync(shotsSrc) || !statSync(shotsSrc).isDirectory()) {
+    throw new Error('main.ts: screenshots/ is missing from the repository');
+  }
+
+  rmSync(OUTPUT_DIR, { recursive: true, force: true });
+  mkdirSync(OUTPUT_DIR, { recursive: true });
+  copyTreeSorted(gameSrc, join(OUTPUT_DIR, 'game'));
+  copyTreeSorted(shotsSrc, join(OUTPUT_DIR, 'screenshots'));
+
+  const dossier = buildDossier(OUTPUT_DIR, {
+    text_max_bytes: 163840,
+    screenshots: { max: 4, max_bytes: 262144 },
+    game_max_files: 993,
+    game_max_bytes: 50331648,
+  });
+  writeFileSync(join(OUTPUT_DIR, 'dossier.json'), dossier);
+  console.log(`Solmar Bay handed in: dossier.json is ${dossier.length} bytes.`);
+}
+
+main();
