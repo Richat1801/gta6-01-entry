@@ -1,198 +1,223 @@
-// Solmar Bay — the story: 5 chained missions for fixer Rico Vane.
-// One job: mission definitions, step flow, markers and rewards.
-// Rewards are paid by main.js, which increments the mission index and only
-// then saves — so a mission can never pay twice.
+// Solmar Bay missions: Rico Vane's five-job story chain, markers and rewards.
+// One job: what the player has to do next, and paying them when it is done.
 
-import { MISSION_REWARDS } from './config.js';
+import * as THREE from 'three';
+import { MISSIONS, WORLD, roadCenter, clamp, distance2D, formatCash } from './config.js';
+import { buildCarMesh } from './vehicles.js';
+import { spawnRivalGang } from './combat.js';
 
-function defs(P) {
-  return [
-    {
-      title: '1 — Marina Pickup',
-      brief: 'Rico Vane needs a package off the marina docks. Go get it, then bring it to his garage.',
-      steps: [
-        { kind: 'goto', text: 'Go to the marina docks and collect the package', x: P.marina.x, z: P.marina.z, radius: 6 },
-        { kind: 'goto', text: 'Deliver the package to Rico\u2019s garage', x: P.garage.x, z: P.garage.z, radius: 7 },
-      ],
-    },
-    {
-      title: '2 — Coast Run',
-      brief: 'The package is hot. Drive it downtown before the buyer walks — 100 seconds.',
-      steps: [
-        { kind: 'goto', text: 'Drive the package to the downtown drop-off — beat the clock!', x: 25, z: -25, radius: 8, timeLimit: 100 },
-      ],
-    },
-    {
-      title: '3 — Harbor Heat',
-      brief: 'The Dagger crew jumped Rico\u2019s runners at the marina. Go settle it.',
-      steps: [
-        { kind: 'kill', text: 'Take out the Dagger crew at the marina (0/4)', x: P.marina.x, z: P.marina.z, radius: 26, kills: 4, spawnAt: 'marina' },
-        { kind: 'goto', text: 'Report back to Rico\u2019s garage', x: P.garage.x, z: P.garage.z, radius: 7 },
-      ],
-    },
-    {
-      title: '4 — Downtown Getaway',
-      brief: 'Rico wants the gold Sirocco parked downtown. Steal it — the cops will notice.',
-      steps: [
-        { kind: 'steal', text: 'Steal the gold Sirocco downtown (walk up and press E)', x: P.targetCarSpot.x, z: P.targetCarSpot.z, radius: 10 },
-        { kind: 'escape', text: 'Lose the cops — stay hidden until your wanted level clears', x: P.garage.x, z: P.garage.z, radius: 8 },
-        { kind: 'goto', text: 'Bring the Sirocco to Rico\u2019s garage', x: P.garage.x, z: P.garage.z, radius: 8 },
-      ],
-    },
-    {
-      title: '5 — Bay Kingpin',
-      brief: 'Marlo Kane runs the Daggers from the marina warehouse. End him, and Solmar Bay is yours.',
-      steps: [
-        { kind: 'kill', text: 'Storm the warehouse — take down Marlo Kane and his guards (0/6)', x: P.warehouse.x, z: P.warehouse.z, radius: 28, kills: 6, spawnAt: 'warehouse', boss: true },
-        { kind: 'goto', text: 'Return to Rico\u2019s garage and collect your cut', x: P.garage.x, z: P.garage.z, radius: 7 },
-      ],
-    },
-  ];
+/** Create the mission manager. Holds the active job, step and marker beacon. */
+export function createMissionManager(scene) {
+  const beaconGeo = new THREE.CylinderGeometry(2.6, 2.6, 30, 20, 1, true);
+  const beaconMat = new THREE.MeshBasicMaterial({
+    color: 0xffd23e, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false,
+  });
+  const beacon = new THREE.Mesh(beaconGeo, beaconMat);
+  beacon.visible = false;
+  scene.add(beacon);
+  const ringGeo = new THREE.TorusGeometry(3, 0.22, 8, 32);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0xffd23e });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = Math.PI / 2;
+  ring.visible = false;
+  scene.add(ring);
+  return {
+    scene, beacon, ring,
+    missionIndex: 0, // next mission to start (0-based)
+    active: null, // { def, stepIndex, step, holdTimer, courier, rivals }
+    done: false,
+    toast: '',
+  };
 }
 
-export class MissionSystem {
-  constructor(places, hooks) {
-    this.places = places;
-    this.hooks = hooks; // {toast, objective, reward, allDone, spawnRivals, setWanted, markTargetCar}
-    this.list = defs(places);
-    this.missionIndex = 0;
-    this.stepIndex = 0;
-    this.killsDone = 0;
-    this.stepTimer = 0;
-    this.active = false;
-    this.finishedAll = false;
-  }
+/** Start mission number n (1-based). Returns false when there is no such mission. */
+export function startMission(mgr, n, state) {
+  const def = MISSIONS[n - 1];
+  if (!def) return false;
+  mgr.missionIndex = n - 1;
+  mgr.active = { def, stepIndex: 0, step: def.steps[0], holdTimer: 0, courier: null, rivals: [] };
+  mgr.done = false;
+  setupStep(mgr, state);
+  return true;
+}
 
-  current() { return this.list[this.missionIndex] || null; }
-  currentStep() {
-    const m = this.current();
-    return m ? m.steps[this.stepIndex] : null;
+function setupStep(mgr, state) {
+  const step = mgr.active.step;
+  mgr.active.holdTimer = 0;
+  if (step.type === 'chase') {
+    const { group } = buildCarMesh('sedan', 0x8e1f1f);
+    const x = clamp(state.player.x + 40, 20, WORLD.citySpan - 20);
+    const z = clamp(state.player.z + 20, 20, WORLD.citySpan - 20);
+    group.position.set(x, 0, z);
+    mgr.scene.add(group);
+    mgr.active.courier = {
+      mesh: group, x, z, angle: 0, speed: 15,
+      wpX: roadCenter(4), wpZ: roadCenter(6),
+    };
   }
-
-  start() {
-    this.active = true;
-    this.stepIndex = 0;
-    this.killsDone = 0;
-    this.stepTimer = 0;
-    this.enterStep();
+  if (step.type === 'shootout') {
+    mgr.active.rivals = spawnRivalGang(mgr.scene, step.x, step.z, step.rivals || 4);
+    state.rivals = mgr.active.rivals;
+    if (state.audio) state.audio.playChime();
   }
-
-  // Restore saved progress exactly (used by Continue).
-  restore(missionIndex, stepIndex) {
-    this.missionIndex = Math.min(missionIndex, this.list.length - 1);
-    this.stepIndex = stepIndex || 0;
-    this.killsDone = 0;
-    this.stepTimer = 0;
-    this.active = true;
-    this.enterStep(true);
+  if (step.type === 'escape') {
+    state.wanted = Math.max(state.wanted, 3);
+    state.lastCrimeAt = state.time;
+    state.hiddenTimer = 0;
   }
+  updateMarker(mgr, state);
+}
 
-  enterStep(restoring) {
-    const step = this.currentStep();
-    const m = this.current();
-    if (!step || !m) return;
-    this.stepTimer = 0;
-    if (step.kind === 'kill') {
-      const at = step.spawnAt === 'warehouse' ? this.places.warehouse : this.places.marina;
-      this.hooks.spawnRivals(step.kills, at.x, at.z, !!step.boss);
+/** Where the current objective points: { x, z } or null. */
+export function currentMarkerPos(mgr) {
+  if (!mgr.active) return null;
+  const step = mgr.active.step;
+  if (step.type === 'enterCar') {
+    const car = mgr.active.carRef;
+    return car ? { x: car.x, z: car.z } : { x: step.x || 0, z: step.z || 0 };
+  }
+  if (step.type === 'chase' && mgr.active.courier) {
+    return { x: mgr.active.courier.x, z: mgr.active.courier.z };
+  }
+  return { x: step.x, z: step.z };
+}
+
+function updateMarker(mgr, state) {
+  const pos = currentMarkerPos(mgr);
+  if (!pos) {
+    mgr.beacon.visible = false;
+    mgr.ring.visible = false;
+    return;
+  }
+  mgr.beacon.visible = true;
+  mgr.ring.visible = true;
+  mgr.beacon.position.set(pos.x, 15, pos.z);
+  mgr.ring.position.set(pos.x, 0.25, pos.z);
+}
+
+/** One-line objective text for the HUD, with distance. */
+export function objectiveText(mgr, state) {
+  if (!mgr.active) {
+    if (mgr.done) return 'Story complete — free roam Solmar Bay. Press M for the next job.';
+    return 'No active job — find Rico Vane. Press M to start a mission.';
+  }
+  const step = mgr.active.step;
+  const pos = currentMarkerPos(mgr);
+  const dist = pos ? Math.round(distance2D(state.player.x, state.player.z, pos.x, pos.z)) : 0;
+  return `MISSION ${mgr.active.def.id}: ${mgr.active.def.name} — ${step.label} (${dist}m)`;
+}
+
+/** Advance the active mission one tick. Returns 'complete' when a job pays out. */
+export function updateMissions(mgr, state, dt) {
+  if (!mgr.active) return null;
+  const step = mgr.active.step;
+  const px = state.player.x;
+  const pz = state.player.z;
+
+  if (step.type === 'enterCar') {
+    const car = state.parkedCars[step.carIndex];
+    mgr.active.carRef = car;
+    updateMarker(mgr, state);
+    if (state.driving && state.playerCar === car) {
+      advanceStep(mgr, state);
     }
-    if (step.kind === 'steal') this.hooks.markTargetCar();
-    this.hooks.objective(m.title + ' — ' + step.text);
-    if (!restoring) this.hooks.toast(m.title + ': ' + m.brief);
+    return null;
   }
-
-  marker() {
-    const step = this.currentStep();
-    if (!step || !this.active || this.finishedAll) return null;
-    return { x: step.x, z: step.z, kind: step.kind };
+  if (step.type === 'goto') {
+    if (distance2D(px, pz, step.x, step.z) < step.radius) advanceStep(mgr, state);
+    return null;
   }
-
-  registerKill() {
-    const step = this.currentStep();
-    if (!step || step.kind !== 'kill') return;
-    this.killsDone += 1;
-    const m = this.current();
-    const left = step.kills - this.killsDone;
-    this.hooks.objective(m.title + ' — ' + step.text.replace(/\(\d+\/\d+\)/, '(' + this.killsDone + '/' + step.kills + ')'));
-    if (left <= 0) this.advance();
-    else this.hooks.toast('Rival down — ' + left + ' to go.');
-  }
-
-  notifyCarStolen(car) {
-    const step = this.currentStep();
-    if (!step || step.kind !== 'steal') return;
-    if (!car.target) {
-      this.hooks.toast('Wrong car — Rico wants the gold Sirocco downtown.');
-      return;
-    }
-    this.hooks.setWanted(3);
-    this.hooks.toast('You stole the Sirocco! The cops are on you — lose them!');
-    this.advance();
-  }
-
-  update(dt, playerPos, wanted) {
-    if (!this.active || this.finishedAll) return;
-    const step = this.currentStep();
-    if (!step) return;
-    if (step.kind === 'goto' || step.kind === 'collect') {
-      const d = Math.hypot(playerPos.x - step.x, playerPos.z - step.z);
-      if (d <= step.radius) {
-        if (this.missionIndex === 0 && this.stepIndex === 0) this.hooks.toast('Package collected. Get it to Rico.');
-        this.advance();
-        return;
-      }
-    }
-    if (step.kind === 'escape') {
-      if (wanted <= 0) {
-        this.hooks.toast('Clean. The heat is off — bring the car to Rico.');
-        this.advance();
-      }
-      return;
-    }
-    if (step.timeLimit) {
-      this.stepTimer += dt;
-      const left = Math.max(0, Math.ceil(step.timeLimit - this.stepTimer));
-      const m = this.current();
-      this.hooks.objective(m.title + ' — ' + step.text + '  [' + left + 's]');
-      if (this.stepTimer >= step.timeLimit) {
-        this.hooks.toast('Too slow — the buyer walked. Rico gives you another shot.');
-        this.stepIndex = 0;
-        this.enterStep();
-      }
-    }
-  }
-
-  advance() {
-    const m = this.current();
-    this.stepIndex += 1;
-    if (this.stepIndex >= m.steps.length) {
-      this.completeMission();
+  if (step.type === 'channel') {
+    if (distance2D(px, pz, step.x, step.z) < step.radius) {
+      mgr.active.holdTimer += dt;
+      if (mgr.active.holdTimer >= step.holdSeconds) advanceStep(mgr, state);
     } else {
-      this.enterStep();
+      mgr.active.holdTimer = 0;
     }
+    return null;
   }
-
-  completeMission() {
-    const reward = MISSION_REWARDS[this.missionIndex] || 0;
-    this.hooks.reward(reward);
-    this.hooks.toast('Mission complete! +' + '$' + reward);
-    // main.js increments the index and saves, in that order.
-    this.hooks.missionComplete(this.missionIndex, reward);
-  }
-
-  // Called by main.js after it has incremented the index and saved.
-  afterComplete(nextIndex) {
-    this.missionIndex = nextIndex;
-    this.stepIndex = 0;
-    this.killsDone = 0;
-    this.stepTimer = 0;
-    if (this.missionIndex >= this.list.length) {
-      this.finishedAll = true;
-      this.active = false;
-      this.hooks.objective('Solmar Bay is yours. Thanks for playing!');
-      this.hooks.allDone();
+  if (step.type === 'chase') {
+    const c = mgr.active.courier;
+    if (!c) return null;
+    // Courier loops the road grid at a steady cruise.
+    const dx = c.wpX - c.x;
+    const dz = c.wpZ - c.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 6) {
+      c.wpX = roadCenter(Math.floor(Math.random() * WORLD.gridBlocks));
+      c.wpZ = roadCenter(Math.floor(Math.random() * WORLD.gridBlocks));
     } else {
-      this.enterStep();
+      const a = Math.atan2(dx, dz);
+      let d = a - c.angle;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      c.angle += clamp(d, -2 * dt, 2 * dt);
+      c.x += Math.sin(c.angle) * c.speed * dt;
+      c.z += Math.cos(c.angle) * c.speed * dt;
+      c.mesh.position.set(c.x, 0, c.z);
+      c.mesh.rotation.y = c.angle;
     }
+    updateMarker(mgr, state);
+    const pd = distance2D(px, pz, c.x, c.z);
+    if (pd < step.maxDistance) {
+      mgr.active.holdTimer += dt;
+      if (mgr.active.holdTimer >= step.holdSeconds) advanceStep(mgr, state);
+    } else {
+      mgr.active.holdTimer = Math.max(0, mgr.active.holdTimer - dt * 0.5);
+    }
+    return null;
   }
+  if (step.type === 'shootout') {
+    updateMarker(mgr, state);
+    const alive = (mgr.active.rivals || []).filter((r) => r.alive).length;
+    if (alive === 0) advanceStep(mgr, state);
+    return null;
+  }
+  if (step.type === 'escape') {
+    if (distance2D(px, pz, step.x, step.z) < step.radius) {
+      state.wanted = 0;
+      state.hiddenTimer = 0;
+      advanceStep(mgr, state);
+    }
+    return null;
+  }
+  return null;
+}
+
+function advanceStep(mgr, state) {
+  const m = mgr.active;
+  if (m.stepIndex + 1 < m.def.steps.length) {
+    m.stepIndex += 1;
+    m.step = m.def.steps[m.stepIndex];
+    setupStep(mgr, state);
+    if (state.audio) state.audio.playChime();
+    return;
+  }
+  completeMission(mgr, state);
+}
+
+function completeMission(mgr, state) {
+  const def = mgr.active.def;
+  state.cash += def.reward;
+  mgr.toast = `Job done: ${def.name} — +${formatCash(def.reward)}`;
+  mgr.missionIndex = def.id; // next mission number (0-based count)
+  if (mgr.active.courier) {
+    mgr.scene.remove(mgr.active.courier.mesh);
+    mgr.active.courier = null;
+  }
+  mgr.active = null;
+  mgr.beacon.visible = false;
+  mgr.ring.visible = false;
+  if (def.id >= MISSIONS.length) {
+    mgr.done = true;
+  }
+  if (state.audio) state.audio.playChime();
+  if (state.saveGame) state.saveGame();
+}
+
+/** Start the next unplayed mission, or replay the chain from the top when done. */
+export function startNextMission(mgr, state) {
+  if (mgr.active) return false;
+  const next = mgr.done ? 1 : mgr.missionIndex + 1;
+  return startMission(mgr, Math.min(next, MISSIONS.length), state);
 }

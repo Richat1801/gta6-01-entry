@@ -1,187 +1,162 @@
-// Solmar Bay — wanted system and police: cruisers chase, officers arrest.
-// One job: turn crimes into heat, and heat into a chase that can end busted.
+// Solmar Bay police: wanted stars, chasing cruisers, arresting officers, busts.
+// One job: the heat — it rises on crimes, decays when hidden, and catches you.
 
 import * as THREE from 'three';
-import { WORLD, clamp, angleLerp, mulberry32 } from './config.js';
-import { makeCar, updateCarVisual } from './vehicles.js';
+import { WANTED, WORLD, clamp, distance2D } from './config.js';
+import { buildPoliceMesh } from './vehicles.js';
+import { buildPedestrianMesh } from './pedestrians.js';
+import { resolveBuildingCollision } from './city.js';
 
-export class PoliceSystem {
-  constructor(scene, audio) {
-    this.scene = scene;
-    this.audio = audio;
-    this.wanted = 0;
-    this.crimeTimer = 0;   // time since the last crime
-    this.decayTimer = 0;   // counts down to losing one star while hidden
-    this.cruisers = [];
-    this.officers = [];
-    this.rng = mulberry32(999);
-    this.arrestTimer = 0;
-    this.flashT = 0;
+/** Add wanted stars (capped) and stamp the last-crime time. */
+export function addWanted(state, n) {
+  state.wanted = clamp(state.wanted + n, 0, WANTED.maxStars);
+  state.lastCrimeAt = state.time;
+  state.wantedDirty = true;
+}
+
+/** Decay the wanted level when the player has stayed hidden long enough. */
+export function updateWantedDecay(state, dt) {
+  if (state.wanted === 0) return;
+  state.hiddenTimer += dt;
+  const policeNear = state.police.cruisers.some((c) => distance2D(c.x, c.z, state.player.x, state.player.z) < 45);
+  if (!policeNear && state.hiddenTimer > WANTED.decaySeconds) {
+    state.wanted -= 1;
+    state.hiddenTimer = 0;
+    state.wantedDirty = true;
   }
+  if (policeNear) state.hiddenTimer = 0;
+}
 
-  addWanted(n) {
-    this.wanted = clamp(this.wanted + n, 0, 5);
-    this.crimeTimer = 0;
-    this.decayTimer = 0;
-    this.syncCruisers();
-  }
+/** Create the police pool (cruisers + officers, spawned on demand). */
+export function createPolice(scene) {
+  return { scene, cruisers: [], officers: [], spawnTimer: 0 };
+}
 
-  setWanted(n) {
-    this.wanted = clamp(n, 0, 5);
-    this.crimeTimer = 0;
-    this.decayTimer = 0;
-    this.syncCruisers();
-  }
+function spawnCruiser(police, x, z) {
+  const { group, wheels } = buildPoliceMesh();
+  group.position.set(x, 0, z);
+  police.scene.add(group);
+  const c = { mesh: group, wheels, x, z, angle: 0, speed: 0, sirenPhase: Math.random() * 10 };
+  police.cruisers.push(c);
+  return c;
+}
 
-  // Cruisers on the street = wanted level (capped at 4). Officers appear at 2+.
-  syncCruisers() {
-    const wantCruisers = Math.min(this.wanted, 4);
-    while (this.cruisers.length < wantCruisers) {
-      const c = this.spawnCruiser();
-      if (c) this.cruisers.push(c);
+/** Test/scene hook: put a cruiser at an exact spot (used by the chase scene preset). */
+export function debugSpawnCruiser(police, x, z) {
+  return spawnCruiser(police, x, z);
+}
+
+function spawnOfficer(police, x, z) {
+  const mesh = buildPedestrianMesh();
+  const navy = new THREE.MeshLambertMaterial({ color: 0x1a2a4a });
+  mesh.children.forEach((child) => {
+    if (child.geometry && child.geometry.type === 'BoxGeometry' && child.position.y > 0.9 && child.position.y < 1.3) {
+      child.material = navy;
     }
-    while (this.cruisers.length > wantCruisers) {
-      const c = this.cruisers.pop();
-      this.scene.remove(c.group);
-    }
-    const wantOfficers = this.wanted >= 2 ? Math.min(this.wanted - 1, 3) : 0;
-    while (this.officers.length < wantOfficers) {
-      const o = this.spawnOfficer();
-      if (o) this.officers.push(o);
-    }
-    while (this.officers.length > wantOfficers) {
-      const o = this.officers.pop();
-      this.scene.remove(o.mesh);
-    }
-  }
+  });
+  mesh.position.set(x, 0, z);
+  police.scene.add(mesh);
+  const o = { mesh, x, z, angle: 0, speed: 5.2, arrestTimer: 0, phase: Math.random() * 6 };
+  police.officers.push(o);
+  return o;
+}
 
-  spawnPointNear(playerPos, minDist) {
-    for (let tries = 0; tries < 12; tries++) {
-      const a = this.rng() * Math.PI * 2;
-      const d = minDist + this.rng() * 30;
-      const x = clamp(playerPos.x + Math.cos(a) * d, -WORLD.half + 10, WORLD.half - 10);
-      const z = clamp(playerPos.z + Math.sin(a) * d, -WORLD.half + 10, WORLD.half - 10);
-      if (Math.hypot(x - playerPos.x, z - playerPos.z) >= minDist) return { x, z };
+/**
+ * Keep the right number of cruisers/officers for the wanted level and chase the player.
+ * Returns 'busted' when an officer arrests the on-foot player, else null.
+ */
+export function updatePolice(police, state, dt, time) {
+  const px = state.player.x;
+  const pz = state.player.z;
+  const wantedCruisers = state.wanted === 0 ? 0 : Math.min(state.wanted + 1, 4);
+  police.spawnTimer -= dt;
+  if (police.cruisers.length < wantedCruisers && police.spawnTimer <= 0) {
+    police.spawnTimer = 1.2;
+    const a = Math.random() * Math.PI * 2;
+    spawnCruiser(police, clamp(px + Math.sin(a) * 70, 10, WORLD.citySpan - 10), clamp(pz + Math.cos(a) * 70, 10, WORLD.citySpan - 10));
+  }
+  if (state.wanted === 0) {
+    for (const c of police.cruisers) {
+      police.scene.remove(c.mesh);
     }
-    return { x: playerPos.x + minDist, z: playerPos.z };
+    police.cruisers.length = 0;
+    for (const o of police.officers) police.scene.remove(o.mesh);
+    police.officers.length = 0;
+    return null;
   }
-
-  spawnCruiser() {
-    const p = this.playerPosRef ? this.playerPosRef() : { x: 0, z: 0 };
-    const s = this.spawnPointNear(p, 45);
-    const yaw = Math.atan2(p.x - s.x, p.z - s.z);
-    const car = makeCar(this.scene, s.x, s.z, yaw, 0xf2f2f2, 'Police Cruiser', { police: true });
-    car.speed = 0;
-    car.chase = true;
-    return car;
-  }
-
-  spawnOfficer() {
-    const p = this.playerPosRef ? this.playerPosRef() : { x: 0, z: 0 };
-    const s = this.spawnPointNear(p, 25);
-    const g = new THREE.Group();
-    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.55, 4, 8),
-      new THREE.MeshStandardMaterial({ color: 0x1a2a4a, roughness: 0.9 }));
-    torso.position.y = 1.05; torso.castShadow = true;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8),
-      new THREE.MeshStandardMaterial({ color: 0xe8b98a, roughness: 0.8 }));
-    head.position.y = 1.75;
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.12, 10),
-      new THREE.MeshStandardMaterial({ color: 0x101828 }));
-    cap.position.y = 1.95;
-    g.add(torso); g.add(head); g.add(cap);
-    g.position.set(s.x, 0, s.z);
-    this.scene.add(g);
-    return { mesh: g, pos: g.position, yaw: 0, speed: 5.2 };
-  }
-
-  // playerPos: {x,z}; playerInCar: bool; onBusted: callback.
-  update(dt, playerPos, playerInCar, onBusted) {
-    this.crimeTimer += dt;
-    // Wanted decay: hidden (no cruiser within 40m) and quiet for 12s.
-    if (this.wanted > 0) {
-      let nearest = 1e9;
-      for (const c of this.cruisers) nearest = Math.min(nearest, Math.hypot(c.pos.x - playerPos.x, c.pos.z - playerPos.z));
-      for (const o of this.officers) nearest = Math.min(nearest, Math.hypot(o.pos.x - playerPos.x, o.pos.z - playerPos.z));
-      if (this.crimeTimer > 12 && nearest > 40) {
-        this.decayTimer += dt;
-        if (this.decayTimer > 8) {
-          this.decayTimer = 0;
-          this.wanted = Math.max(0, this.wanted - 1);
-          this.syncCruisers();
-        }
-      } else {
-        this.decayTimer = 0;
+  // Cruisers chase: steer straight at the player, sliding around buildings.
+  for (const c of police.cruisers) {
+    const targetAngle = Math.atan2(px - c.x, pz - c.z);
+    let d = targetAngle - c.angle;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    c.angle += clamp(d, -2.4 * dt, 2.4 * dt);
+    const dist = distance2D(c.x, c.z, px, pz);
+    const topSpeed = 26 + state.wanted * 3;
+    c.speed = dist > 8 ? Math.min(c.speed + 14 * dt, topSpeed) : Math.max(c.speed - 20 * dt, 4);
+    const pos = { x: c.x + Math.sin(c.angle) * c.speed * dt, z: c.z + Math.cos(c.angle) * c.speed * dt };
+    resolveBuildingCollision(state.colliders, pos, 2.2);
+    c.x = clamp(pos.x, WORLD.minX + 4, WORLD.maxX - 4);
+    c.z = clamp(pos.z, WORLD.minZ + 4, WORLD.maxZ - 4);
+    c.mesh.position.set(c.x, 0, c.z);
+    c.mesh.rotation.y = c.angle;
+    for (const w of c.wheels) w.rotation.x += (c.speed * dt) / 0.42;
+    // Flashing light bar.
+    const bars = c.mesh.userData.lightBar;
+    if (bars) {
+      const on = Math.sin(time * 10 + c.sirenPhase) > 0;
+      bars[0].material.color.setHex(on ? 0xff2222 : 0x551111);
+      bars[1].material.color.setHex(on ? 0x111155 : 0x2255ff);
+    }
+    // Ram the player's car.
+    if (state.driving && dist < 3.4 && state.playerCar) {
+      state.playerCar.speed *= 0.82;
+      if (state.player.health > 0 && Math.random() < dt * 0.5) {
+        state.player.health = Math.max(0, state.player.health - 2);
       }
     }
-
-    // Cruisers chase: steer toward the player, ram speed scales with stars.
-    // A pacer cruiser (screenshot staging) just holds its lane and speed.
-    const chaseSpeed = 16 + this.wanted * 3.2;
-    for (const c of this.cruisers) {
-      if (c.pacer) {
-        c.pos.x += Math.sin(c.yaw) * c.speed * dt;
-        c.pos.z += Math.cos(c.yaw) * c.speed * dt;
-        updateCarVisual(c);
-        continue;
-      }
-      const dx = playerPos.x - c.pos.x, dz = playerPos.z - c.pos.z;
-      const d = Math.hypot(dx, dz);
-      const targetYaw = Math.atan2(dx, dz);
-      c.yaw = angleLerp(c.yaw, targetYaw, Math.min(1, dt * 2.2));
-      c.speed = Math.min(chaseSpeed, c.speed + 12 * dt);
-      if (d > 3.2) {
-        c.pos.x += Math.sin(c.yaw) * c.speed * dt;
-        c.pos.z += Math.cos(c.yaw) * c.speed * dt;
-      } else {
-        c.speed *= 0.9;
-      }
-      c.pos.x = clamp(c.pos.x, -WORLD.half - 10, WORLD.half + 10);
-      c.pos.z = clamp(c.pos.z, -WORLD.half - 10, WORLD.half + 10);
-      updateCarVisual(c);
-    }
-    // Light-bar flash.
-    this.flashT += dt;
-    const flash = Math.sin(this.flashT * 14) > 0;
-    for (const c of this.cruisers) {
-      if (c.group.userData.lightRed) c.group.userData.lightRed.material.emissiveIntensity = flash ? 2.2 : 0.25;
-      if (c.group.userData.lightBlue) c.group.userData.lightBlue.material.emissiveIntensity = flash ? 0.25 : 2.2;
-    }
-    this.audio.setSiren(this.cruisers.length > 0);
-
-    // Officers run the player down on foot and arrest at close range.
-    let arresting = false;
-    for (const o of this.officers) {
-      const dx = playerPos.x - o.pos.x, dz = playerPos.z - o.pos.z;
-      const d = Math.hypot(dx, dz);
-      o.yaw = Math.atan2(dx, dz);
-      if (d > 2.2) {
-        o.pos.x += (dx / d) * o.speed * dt;
-        o.pos.z += (dz / d) * o.speed * dt;
-      }
-      o.mesh.rotation.y = o.yaw;
-      if (d < 2.6 && !playerInCar) arresting = true;
-    }
-    if (arresting) {
-      this.arrestTimer += dt;
-      if (this.arrestTimer > 2.0) {
-        this.arrestTimer = 0;
-        onBusted();
-      }
+  }
+  // Officers on foot when the heat is 2+ and the player is on foot.
+  const wantedOfficers = state.wanted >= 2 && !state.driving ? Math.min(state.wanted - 1, 3) : 0;
+  if (police.officers.length < wantedOfficers && police.spawnTimer <= 0) {
+    police.spawnTimer = 1.5;
+    const a = Math.random() * Math.PI * 2;
+    spawnOfficer(police, clamp(px + Math.sin(a) * 26, 10, WORLD.citySpan - 10), clamp(pz + Math.cos(a) * 26, 10, WORLD.citySpan - 10));
+  }
+  for (const o of police.officers) {
+    const dist = distance2D(o.x, o.z, px, pz);
+    const targetAngle = Math.atan2(px - o.x, pz - o.z);
+    let d = targetAngle - o.angle;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    o.angle += clamp(d, -4 * dt, 4 * dt);
+    if (dist > 1.8) {
+      o.x += Math.sin(o.angle) * o.speed * dt;
+      o.z += Math.cos(o.angle) * o.speed * dt;
+      o.arrestTimer = 0;
     } else {
-      this.arrestTimer = 0;
+      o.arrestTimer += dt;
+      if (o.arrestTimer > 1.5) return 'busted';
+    }
+    o.mesh.position.set(o.x, 0, o.z);
+    o.mesh.rotation.y = o.angle;
+    const swing = Math.sin(time * 10 + o.phase) * 0.7;
+    const limbs = o.mesh.userData.limbs;
+    if (limbs) {
+      limbs.legL.rotation.x = swing;
+      limbs.legR.rotation.x = -swing;
+      limbs.armL.rotation.x = -swing * 0.8;
+      limbs.armR.rotation.x = swing * 0.8;
     }
   }
+  return null;
+}
 
-  clearAll() {
-    for (const c of this.cruisers) this.scene.remove(c.group);
-    for (const o of this.officers) this.scene.remove(o.mesh);
-    this.cruisers = [];
-    this.officers = [];
-    this.wanted = 0;
-    this.audio.setSiren(false);
-  }
-
-  allCruisers() { return this.cruisers; }
-  allOfficers() { return this.officers; }
+/** A parked police car prop for the city (not a chaser). Unused by the chase pool. */
+export function buildParkedPoliceCar(scene, x, z, angle) {
+  const { group } = buildPoliceMesh();
+  group.position.set(x, 0, z);
+  group.rotation.y = angle;
+  scene.add(group);
+  return group;
 }

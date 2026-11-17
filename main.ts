@@ -1,41 +1,51 @@
-// Solmar Bay — Heat of the Coast: a gta6-01 entry (Node 22, standard library only).
-// This program hands the game in. It copies this repository's game/ and
-// screenshots/ beside this file into /output and writes /output/dossier.json,
-// the summary the judge reads, with the vendored make.fun library.
-// The game itself is plain static files a desktop browser loads offline:
-// game/index.html and its ES modules, three.js vendored under game/vendor/,
-// no network request at play time.
+// Solmar Bay — Heat of the Coast: the entrypoint that hands the game in.
 //
-// Serve it locally with `node serve.ts` is not shipped; any static server works:
-//   npx --yes serve game
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Copies game/ and screenshots/ from this repository into the output directory
+// (MAKEFUN_OUTPUT_DIR outside the grader, /output inside it) and writes
+// /output/dossier.json with buildDossier from vendor/makefun-game.ts.
+// Node 22, standard library only, no network, deterministic: two runs write
+// the same bytes.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)));
+const outputDir = resolve(process.env.MAKEFUN_OUTPUT_DIR || '/output');
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+function fail(message) {
+  console.error(`main.ts: ${message}`);
+  process.exit(1);
+}
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the
-// bytes; the others refuse an entry the scorer would refuse (more than 4
-// screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of
-// game files, in all, or a path under game/ over 1000 bytes: game/ counts
-// beside /output's own 1000-entry cap, its screenshots/ and dossier.json).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
+function main() {
+  const gameDir = join(repoRoot, 'game');
+  const shotsDir = join(repoRoot, 'screenshots');
+  if (!existsSync(join(gameDir, 'index.html'))) {
+    fail('game/index.html is missing: nothing to hand in');
+  }
+  if (!existsSync(shotsDir)) {
+    fail('screenshots/ is missing: the entry needs 3 or 4 screenshots');
+  }
+
+  // Start from a clean output directory so a second run cannot leave stale files.
+  rmSync(outputDir, { recursive: true, force: true });
+  mkdirSync(outputDir, { recursive: true });
+
+  cpSync(gameDir, join(outputDir, 'game'), { recursive: true });
+  cpSync(shotsDir, join(outputDir, 'screenshots'), { recursive: true });
+
+  const dossier = buildDossier(outputDir, {
     text_max_bytes: 163840,
     screenshots: { max: 4, max_bytes: 262144 },
     game_max_files: 993,
     game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
-);
+  });
+  writeFileSync(join(outputDir, 'dossier.json'), dossier);
+
+  const indexBytes = readFileSync(join(outputDir, 'game', 'index.html')).length;
+  console.log(`main.ts: wrote ${outputDir} (game/index.html ${indexBytes} bytes, dossier.json ${dossier.length} bytes)`);
+}
+
+main();
