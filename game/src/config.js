@@ -1,203 +1,166 @@
-// Solmar Bay — Heat of the Coast: tuning constants, world layout and story data.
-// One job: every number the rest of the game reads, in one place.
+// Solmar Bay — Heat of the Coast: shared tuning, layout and story data.
+// Every other module reads its numbers from here so the whole game stays
+// in one place when the balance changes.
 
-export const WORLD = {
-  gridBlocks: 8, // roads per axis
-  blockSize: 40, // building block side
-  roadWidth: 16, // road strip width
-  pitch: 56, // blockSize + roadWidth
-  citySpan: 448, // 8 * pitch
-  beachStart: 448, // sand strip begins here
-  seaStart: 505, // water begins here
-  minX: -24,
-  maxX: 620,
-  minZ: -24,
-  maxZ: 472,
-};
-
-export function roadCenter(k) {
-  return 8 + k * WORLD.pitch;
-}
-
-export function nearestRoadCoord(v) {
-  let best = roadCenter(0);
-  for (let k = 1; k < WORLD.gridBlocks; k++) {
-    const c = roadCenter(k);
-    if (Math.abs(c - v) < Math.abs(best - v)) best = c;
-  }
-  return best;
-}
-
-export const PLAYER = {
-  walkSpeed: 6,
-  sprintSpeed: 10,
-  jumpSpeed: 8,
-  gravity: 22,
-  radius: 0.7,
-  maxHealth: 100,
-  startCash: 120,
-};
-
-export const DRIVING = {
-  accel: 16,
-  brake: 30,
-  reverseMax: 12,
-  maxSpeed: 38,
-  sportMax: 48,
-  steerRate: 1.9,
-  grip: 0.94,
-};
-
-export const TRAFFIC = {
-  count: 10,
-  speedMin: 8,
-  speedMax: 13,
-};
-
-export const PEDESTRIANS = {
-  count: 26,
-  walkMin: 1.2,
-  walkMax: 2.4,
-};
-
-export const PARKED_CARS = 14;
-
-export const WANTED = {
-  maxStars: 5,
-  decaySeconds: 25,
-  stealStars: 1,
-  hitPedStars: 1,
-  shootStars: 1,
-};
-
-export const COMBAT = {
-  punchRange: 2.4,
-  punchDamage: 26,
+export const CONFIG = {
+  // City grid: 8 x 8 blocks, roads on a 52-unit pitch, 12-unit road width.
+  pitch: 52,
+  blocks: 8,
+  roadWidth: 12,
+  blockSize: 40,
+  cityHalf: 208, // roads run from -208 to +208 on both axes
+  beachStart: 208, // sand strip east of the city
+  beachEnd: 262,
+  seaStart: 262,
+  seaEnd: 560,
+  // Player on foot
+  walkSpeed: 7,
+  sprintSpeed: 12,
+  jumpSpeed: 9,
+  gravity: 26,
+  playerRadius: 0.7,
+  playerHeight: 1.8,
+  // Driving
+  carAccel: 26,
+  carBrake: 42,
+  carMaxSpeed: 38,
+  carReverseMax: 12,
+  carTurnRate: 1.9,
+  // Wanted system
+  wantedDecayDelay: 18, // seconds of quiet before a star fades
+  wantedDecayStep: 12, // seconds per star once fading
+  maxWanted: 5,
+  // Combat
   pistolDamage: 34,
-  pistolRange: 60,
+  pistolRange: 90,
+  pistolFireDelay: 0.22,
+  punchDamage: 20,
+  punchRange: 2.4,
+  playerMaxHealth: 100,
   rivalHealth: 100,
-  rivalShotDamage: 6,
+  // World population
+  parkedCars: 14,
+  trafficCars: 10,
+  pedestrians: 26,
+  // Clock: one game minute per real second, starting late morning
+  clockStartMinutes: 10 * 60 + 24,
+  dayLengthSeconds: 1440,
+  // Save
+  saveKey: 'solmar-bay-save-v1',
 };
 
-export const MISSIONS = [
+// Named places the missions and the HUD point at. All coordinates are world
+// units on the ground plane (y = 0).
+export const PLACES = {
+  ricosGarage: { x: -156, z: -156, label: "Rico's Garage" },
+  beachfront: { x: 226, z: 96, label: 'Solmar Beachfront' },
+  marinaContact: { x: -104, z: 156, label: 'Marina Contact' },
+  dropPoint: { x: 156, z: -104, label: 'North Drop Point' },
+  safehouse: { x: -156, z: -182, label: 'Safehouse' },
+  docks: { x: -182, z: 182, label: 'South Docks' },
+  bayBank: { x: 26, z: 26, label: 'Bay Bank' },
+  hideout: { x: -104, z: -104, label: 'Hideout' },
+  palmsPlaza: { x: 26, z: 26, label: 'Palms Plaza' },
+};
+
+// The five chained story missions from fixer Rico Vane. Each mission is a
+// list of steps; a step completes when the player reaches its marker (drive
+// or on foot), survives its timer, or eliminates its targets.
+export const MISSION_DEFS = [
   {
     id: 1,
-    name: 'First Wheels',
+    title: 'First Wheels',
     giver: 'Rico Vane',
-    briefing: 'Rico needs wheels. Grab the marked coupe on Coral Row and bring it to the marina.',
-    reward: 250,
+    intro: 'Rico needs wheels. Steal any parked car and bring it to the beachfront.',
+    reward: 500,
     steps: [
-      { type: 'enterCar', label: 'Get in the marked coupe', carIndex: 0, radius: 4 },
-      { type: 'goto', label: 'Drive to the Marina Point', x: 400, z: 400, radius: 9 },
+      { type: 'steal', text: 'Steal a parked car (walk up and press E)', radius: 4 },
+      { type: 'drive', pos: PLACES.beachfront, text: 'Drive to the Solmar Beachfront', radius: 10 },
     ],
   },
   {
     id: 2,
-    name: 'The Package',
+    title: 'The Pickup',
     giver: 'Rico Vane',
-    briefing: 'A package is waiting on Palm Court. Pick it up and drop it at the Solmar Hotel.',
-    reward: 400,
+    intro: 'A package is waiting at the marina. Pick it up and drop it north.',
+    reward: 800,
     steps: [
-      { type: 'goto', label: 'Pick up the package on Palm Court', x: 120, z: 64, radius: 6 },
-      { type: 'goto', label: 'Deliver the package to the Solmar Hotel', x: 344, z: 344, radius: 7 },
+      { type: 'goto', pos: PLACES.marinaContact, text: 'Pick up the package at the Marina', radius: 6 },
+      { type: 'drive', pos: PLACES.dropPoint, text: 'Deliver the package to the North Drop', radius: 8 },
     ],
   },
   {
     id: 3,
-    name: 'Tail Job',
+    title: 'Hot Pursuit',
     giver: 'Rico Vane',
-    briefing: 'A courier is running product across town. Tail his sedan — stay close, do not lose him.',
-    reward: 600,
+    intro: 'The heat is on. Lose the cops and reach the safehouse in one piece.',
+    reward: 1200,
     steps: [
-      { type: 'chase', label: 'Tail the courier — stay within 25m', holdSeconds: 12, maxDistance: 25 },
+      { type: 'survive', seconds: 45, wanted: 3, text: 'Survive the heat for 45 seconds', radius: 0 },
+      { type: 'drive', pos: PLACES.safehouse, text: 'Reach the Safehouse', radius: 10 },
     ],
   },
   {
     id: 4,
-    name: 'Pier Shootout',
+    title: 'Dockside Shootout',
     giver: 'Rico Vane',
-    briefing: 'The Coral Kings took our pier. Take it back. Pistol out, make every shot count.',
-    reward: 800,
+    intro: 'Rivals moved on the docks. Clear them out — pistol ready.',
+    reward: 2000,
     steps: [
-      { type: 'shootout', label: 'Clear the Coral Kings off the pier', x: 478, z: 128, radius: 30, rivals: 4 },
+      { type: 'goto', pos: PLACES.docks, text: 'Head to the South Docks', radius: 8 },
+      { type: 'eliminate', count: 4, text: 'Eliminate the rival crew (4)', radius: 0 },
     ],
   },
   {
     id: 5,
-    name: 'The Big Score',
+    title: 'The Bay Heist',
     giver: 'Rico Vane',
-    briefing: 'One last job: the Bay Bank vault. Grab the cash, then lose the heat at the safehouse.',
-    reward: 1500,
+    intro: 'One last job: hit the Bay Bank, grab the cash, vanish.',
+    reward: 5000,
     steps: [
-      { type: 'goto', label: 'Reach the Bay Bank', x: 232, z: 232, radius: 8 },
-      { type: 'channel', label: 'Crack the vault — hold position', x: 232, z: 232, radius: 8, holdSeconds: 4 },
-      { type: 'escape', label: 'Lose the cops — reach the safehouse', x: 64, z: 64, radius: 9 },
+      { type: 'goto', pos: PLACES.bayBank, text: 'Reach the Bay Bank', radius: 8 },
+      { type: 'grab', text: 'Grab the cash (stand in the vault marker)', radius: 6 },
+      { type: 'escape', wanted: 3, pos: PLACES.hideout, text: 'Escape the heat — reach the Hideout', radius: 10 },
     ],
   },
 ];
 
-export const CAR_MODELS = [
-  { model: 'sedan', label: 'Solmar Sedan', color: 0x3a7bd5, topSpeed: 38 },
-  { model: 'coupe', label: 'Vela Coupe', color: 0xd83a3a, topSpeed: 46 },
-  { model: 'taxi', label: 'Bay Taxi', color: 0xf2c230, topSpeed: 36 },
-  { model: 'van', label: 'Cargo Van', color: 0x8a8f98, topSpeed: 32 },
-  { model: 'truck', label: 'Pickup', color: 0x2e8b57, topSpeed: 36 },
-  { model: 'sport', label: 'Comet GT', color: 0xff7a1a, topSpeed: 48 },
-];
-
+// Warm coastal palette: sun-bleached walls, teal sea, coral accents.
 export const PALETTE = {
-  sky: 0x87ceeb,
+  sky: 0x87c5e8,
   sun: 0xfff2d0,
-  sea: 0x1e90c8,
-  sand: 0xe8d29a,
-  asphalt: 0x3c3f45,
-  sidewalk: 0x9aa0a3,
-  grass: 0x7fae62,
-  building: [0xf5efe0, 0xe8b48c, 0x7fb3c8, 0xd96a5f, 0xf2d492, 0x9db8a0, 0xc98bb0, 0x8fa3c8],
-  window: 0x2b3a4a,
+  sea: 0x1e7fa8,
+  sand: 0xe8d3a2,
+  asphalt: 0x3a3f46,
+  sidewalk: 0xb9b3a4,
+  grass: 0x5da24a,
+  buildings: [0xe8b4a0, 0xf2d8a7, 0xa7c8e8, 0xd8a7c8, 0xf5f0e6, 0x9fc8b8, 0xe8c8a0, 0xc8b8e8],
+  carPaint: [0xd23c2e, 0x2e6fd2, 0xf2c230, 0x222831, 0xe8e8e8, 0x2ea86a, 0x8a4fd2, 0xe87a2e],
+  palmTrunk: 0x7a5230,
+  palmLeaf: 0x3f9e4d,
 };
 
-// ---- small shared helpers -------------------------------------------------
-
-export function clamp(v, a, b) {
-  return v < a ? a : v > b ? b : v;
+// Small math helpers shared by every module.
+export function clamp(value, min, max) {
+  return value < min ? min : value > max ? max : value;
 }
-
 export function lerp(a, b, t) {
   return a + (b - a) * t;
 }
-
-export function rand(a, b) {
-  return a + Math.random() * (b - a);
+export function rand(min, max) {
+  return min + Math.random() * (max - min);
 }
-
-export function randInt(a, b) {
-  return Math.floor(rand(a, b + 1));
+export function randPick(list) {
+  return list[Math.floor(Math.random() * list.length)];
 }
-
-export function pick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
 export function distance2D(ax, az, bx, bz) {
   const dx = ax - bx;
   const dz = az - bz;
   return Math.sqrt(dx * dx + dz * dz);
 }
-
 export function angleLerp(a, b, t) {
   let d = b - a;
   while (d > Math.PI) d -= Math.PI * 2;
   while (d < -Math.PI) d += Math.PI * 2;
   return a + d * t;
-}
-
-export function formatClock(totalMinutes) {
-  const h = Math.floor(totalMinutes / 60) % 24;
-  const m = Math.floor(totalMinutes % 60);
-  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
-}
-
-export function formatCash(n) {
-  return '$' + Math.floor(n).toLocaleString('en-US');
 }

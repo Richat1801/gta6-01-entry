@@ -1,151 +1,154 @@
-// Solmar Bay pedestrians: 26 walkers on the sidewalks who flee when scared.
-// One job: crowd life — wandering, fleeing, and getting knocked over.
+// Pedestrians: 26 walkers strolling the sidewalks. They wander block to
+// block, and flee from speeding cars, gunfire and the player when scared.
 
 import * as THREE from 'three';
-import { WORLD, PEDESTRIANS, roadCenter, rand, randInt, pick, clamp, distance2D } from './config.js';
+import { CONFIG, rand, randPick, clamp, distance2D } from './config.js';
+import { blockCenter } from './city.js';
 
-const SHIRT_COLORS = [0xe74c3c, 0x3498db, 0x2ecc71, 0xf39c12, 0x9b59b6, 0x1abc9c, 0xecf0f1, 0x34495e, 0xff8fa3, 0x7f8c8d];
-const SKIN_COLORS = [0xf1c27d, 0xe0ac69, 0x8d5524, 0xffdbac, 0xc68642];
+const SHIRT_COLORS = [0xe85d75, 0x2e6fd2, 0xf2c230, 0x2ea86a, 0x8a4fd2, 0xe8e8e8, 0xe87a2e, 0x4dc8c8];
+const PANTS_COLORS = [0x2c3e50, 0x3a3f46, 0x6b4a2f, 0x1f2a44];
 
-/** Build one walker mesh (torso, head, arms, legs) with a walk swing. */
-export function buildPedestrianMesh() {
-  const g = new THREE.Group();
-  const shirt = new THREE.MeshLambertMaterial({ color: pick(SHIRT_COLORS) });
-  const skin = new THREE.MeshLambertMaterial({ color: pick(SKIN_COLORS) });
-  const pants = new THREE.MeshLambertMaterial({ color: pick([0x2c3e50, 0x5d4037, 0x37474f]) });
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.7, 0.32), shirt);
-  torso.position.y = 1.05;
-  g.add(torso);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), skin);
-  head.position.y = 1.62;
-  g.add(head);
-  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.23, 10, 8), new THREE.MeshLambertMaterial({ color: pick([0x1a1a1a, 0x4a2c0a, 0x777777, 0xd8b25a]) }));
-  hair.position.y = 1.68;
-  hair.scale.set(1, 0.6, 1);
-  g.add(hair);
-  const limbs = {};
-  for (const [name, x, y, mat, w, h] of [
-    ['armL', -0.36, 1.25, skin, 0.14, 0.6],
-    ['armR', 0.36, 1.25, skin, 0.14, 0.6],
-    ['legL', -0.15, 0.55, pants, 0.18, 0.7],
-    ['legR', 0.15, 0.55, pants, 0.18, 0.7],
-  ]) {
-    const limb = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.18), mat);
-    limb.position.set(x, y, 0);
-    limb.geometry.translate(0, -h / 2 + 0.08, 0);
-    limb.position.y = y + h / 2 - 0.08;
-    g.add(limb);
-    limbs[name] = limb;
+export class Pedestrian {
+  constructor(x, z) {
+    this.mesh = buildPedMesh();
+    this.mesh.position.set(x, 0, z);
+    this.heading = rand(0, Math.PI * 2);
+    this.speed = rand(1.2, 2.2);
+    this.target = pickSidewalkTarget(x, z);
+    this.state = 'walk'; // 'walk' | 'flee' | 'down'
+    this.fleeTimer = 0;
+    this.downTimer = 0;
+    this.walkPhase = rand(0, Math.PI * 2);
+    this.scaredBy = null;
   }
-  g.userData.limbs = limbs;
-  return g;
 }
 
-/** Spawn the sidewalk crowd. Each walker has a target intersection to stroll to. */
+function buildPedMesh() {
+  const group = new THREE.Group();
+  const shirt = new THREE.MeshStandardMaterial({ color: randPick(SHIRT_COLORS), roughness: 0.9 });
+  const pants = new THREE.MeshStandardMaterial({ color: randPick(PANTS_COLORS), roughness: 0.9 });
+  const skin = new THREE.MeshStandardMaterial({ color: randPick([0xf2c9a0, 0xd9a066, 0x8a5a34, 0xf7d7b5]), roughness: 0.8 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.75, 0.32), shirt);
+  body.position.y = 1.05;
+  body.castShadow = true;
+  group.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), skin);
+  head.position.y = 1.62;
+  head.castShadow = true;
+  group.add(head);
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.65, 0.22), pants);
+  legL.position.set(-0.14, 0.33, 0);
+  group.add(legL);
+  const legR = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.65, 0.22), pants);
+  legR.position.set(0.14, 0.33, 0);
+  group.add(legR);
+  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.6, 0.16), shirt);
+  armL.position.set(-0.36, 1.05, 0);
+  group.add(armL);
+  const armR = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.6, 0.16), shirt);
+  armR.position.set(0.36, 1.05, 0);
+  group.add(armR);
+  group.userData = { legL, legR, armL, armR };
+  return group;
+}
+
+// A sidewalk point: near a random block's edge, on the pavement.
+export function pickSidewalkTarget(x, z) {
+  const bx = Math.floor(Math.random() * CONFIG.blocks);
+  const bz = Math.floor(Math.random() * CONFIG.blocks);
+  const c = blockCenter(bx, bz);
+  const edge = Math.floor(Math.random() * 4);
+  const off = rand(-19, 19);
+  if (edge === 0) return { x: c.x + off, z: c.z - 21 };
+  if (edge === 1) return { x: c.x + off, z: c.z + 21 };
+  if (edge === 2) return { x: c.x - 21, z: c.z + off };
+  return { x: c.x + 21, z: c.z + off };
+}
+
 export function spawnPedestrians(scene) {
   const peds = [];
-  for (let i = 0; i < PEDESTRIANS.count; i++) {
-    const mesh = buildPedestrianMesh();
-    const horizontal = Math.random() < 0.5;
-    const k = randInt(0, WORLD.gridBlocks - 1);
-    const side = Math.random() < 0.5 ? -1 : 1;
-    const along = rand(20, WORLD.citySpan - 20);
-    const x = horizontal ? along : roadCenter(k) + side * 10.5;
-    const z = horizontal ? roadCenter(k) + side * 10.5 : along;
-    mesh.position.set(x, 0, z);
-    scene.add(mesh);
-    peds.push({
-      mesh, x, z,
-      angle: rand(0, Math.PI * 2),
-      speed: rand(PEDESTRIANS.walkMin, PEDESTRIANS.walkMax),
-      targetX: rand(20, WORLD.citySpan - 20),
-      targetZ: rand(20, WORLD.citySpan - 20),
-      fleeing: false,
-      down: false,
-      downTimer: 0,
-      phase: rand(0, Math.PI * 2),
-    });
+  for (let i = 0; i < CONFIG.pedestrians; i++) {
+    const t = pickSidewalkTarget(0, 0);
+    const ped = new Pedestrian(t.x, t.z);
+    scene.add(ped.mesh);
+    peds.push(ped);
   }
   return peds;
 }
 
-function pickNewStrollTarget(p) {
-  p.targetX = clamp(p.x + rand(-90, 90), 10, WORLD.citySpan - 10);
-  p.targetZ = clamp(p.z + rand(-90, 90), 10, WORLD.citySpan - 10);
-}
-
-/** Scare every walker near a point (gunshot, speeding car): they run away. */
+// Scare every pedestrian within radius of a point (gunshot, crash, siren).
 export function scarePedestrians(peds, x, z, radius) {
-  for (const p of peds) {
-    if (p.down) continue;
-    if (distance2D(p.x, p.z, x, z) < radius) {
-      p.fleeing = true;
-      p.speed = rand(4.5, 6);
-      const a = Math.atan2(p.x - x, p.z - z);
-      p.targetX = clamp(p.x + Math.sin(a) * 70, 10, WORLD.citySpan - 10);
-      p.targetZ = clamp(p.z + Math.cos(a) * 70, 10, WORLD.citySpan - 10);
+  for (const ped of peds) {
+    if (ped.state === 'down') continue;
+    if (distance2D(ped.mesh.position.x, ped.mesh.position.z, x, z) < radius) {
+      ped.state = 'flee';
+      ped.fleeTimer = rand(2.5, 4.5);
+      ped.scaredBy = { x, z };
     }
   }
 }
 
-/** Knock a walker down (hit by a car). Returns true when a walker was hit. */
-export function hitPedestrian(peds, x, z, radius) {
-  for (const p of peds) {
-    if (p.down) continue;
-    if (distance2D(p.x, p.z, x, z) < radius) {
-      p.down = true;
-      p.downTimer = 4;
-      p.mesh.rotation.x = -Math.PI / 2;
-      p.mesh.position.y = 0.3;
-      scarePedestrians(peds, x, z, 26);
-      return true;
+export function updatePedestrian(ped, dt, playerPos, playerCarSpeed) {
+  const pos = ped.mesh.position;
+  if (ped.state === 'down') {
+    ped.downTimer -= dt;
+    ped.mesh.rotation.x = -Math.PI / 2; // lying flat
+    if (ped.downTimer <= 0) {
+      ped.state = 'walk';
+      ped.mesh.rotation.x = 0;
+      ped.target = pickSidewalkTarget(pos.x, pos.z);
+    }
+    return;
+  }
+  let speed = ped.speed;
+  let tx = ped.target.x;
+  let tz = ped.target.z;
+  if (ped.state === 'flee') {
+    ped.fleeTimer -= dt;
+    speed = 5.2;
+    // Run directly away from what scared them.
+    const dx = pos.x - ped.scaredBy.x;
+    const dz = pos.z - ped.scaredBy.z;
+    const d = Math.max(0.1, Math.hypot(dx, dz));
+    tx = pos.x + (dx / d) * 30;
+    tz = pos.z + (dz / d) * 30;
+    if (ped.fleeTimer <= 0) {
+      ped.state = 'walk';
+      ped.target = pickSidewalkTarget(pos.x, pos.z);
     }
   }
-  return false;
-}
-
-/** Advance every walker: stroll, flee, get up again after being knocked down. */
-export function updatePedestrians(peds, dt, time) {
-  for (const p of peds) {
-    if (p.down) {
-      p.downTimer -= dt;
-      if (p.downTimer <= 0) {
-        p.down = false;
-        p.mesh.rotation.x = 0;
-        p.mesh.position.y = 0;
-        p.fleeing = true;
-        p.speed = rand(4.5, 6);
-        pickNewStrollTarget(p);
-      }
-      continue;
-    }
-    const dx = p.targetX - p.x;
-    const dz = p.targetZ - p.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist < 2) {
-      if (p.fleeing) {
-        p.fleeing = false;
-        p.speed = rand(PEDESTRIANS.walkMin, PEDESTRIANS.walkMax);
-      }
-      pickNewStrollTarget(p);
-      continue;
-    }
-    const targetAngle = Math.atan2(dx, dz);
-    let d = targetAngle - p.angle;
-    while (d > Math.PI) d -= Math.PI * 2;
-    while (d < -Math.PI) d += Math.PI * 2;
-    p.angle += Math.max(-3 * dt, Math.min(3 * dt, d));
-    p.x += Math.sin(p.angle) * p.speed * dt;
-    p.z += Math.cos(p.angle) * p.speed * dt;
-    p.x = clamp(p.x, 6, WORLD.citySpan - 6);
-    p.z = clamp(p.z, 6, WORLD.citySpan - 6);
-    p.mesh.position.set(p.x, 0, p.z);
-    p.mesh.rotation.y = p.angle;
-    const swing = Math.sin(time * (p.fleeing ? 11 : 7) + p.phase) * (p.fleeing ? 0.9 : 0.55);
-    const limbs = p.mesh.userData.limbs;
-    limbs.legL.rotation.x = swing;
-    limbs.legR.rotation.x = -swing;
-    limbs.armL.rotation.x = -swing * 0.8;
-    limbs.armR.rotation.x = swing * 0.8;
+  const dx = tx - pos.x;
+  const dz = tz - pos.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 1.5) {
+    if (ped.state === 'walk') ped.target = pickSidewalkTarget(pos.x, pos.z);
+    return;
   }
+  const desired = Math.atan2(dx, dz);
+  let dh = desired - ped.heading;
+  while (dh > Math.PI) dh -= Math.PI * 2;
+  while (dh < -Math.PI) dh += Math.PI * 2;
+  ped.heading += clamp(dh, -3.2 * dt, 3.2 * dt);
+  pos.x += Math.sin(ped.heading) * speed * dt;
+  pos.z += Math.cos(ped.heading) * speed * dt;
+  pos.x = clamp(pos.x, -CONFIG.cityHalf - 6, CONFIG.beachEnd - 4);
+  pos.z = clamp(pos.z, -CONFIG.cityHalf - 6, CONFIG.cityHalf + 6);
+  ped.mesh.rotation.y = ped.heading;
+  // Walk-cycle swing on the limbs.
+  ped.walkPhase += dt * speed * 3.2;
+  const swing = Math.sin(ped.walkPhase) * 0.55;
+  ped.mesh.userData.legL.rotation.x = swing;
+  ped.mesh.userData.legR.rotation.x = -swing;
+  ped.mesh.userData.armL.rotation.x = -swing * 0.7;
+  ped.mesh.userData.armR.rotation.x = swing * 0.7;
+  // A fast car bearing down on a walker knocks them down (and counts as a crime).
+  if (playerCarSpeed > 8) {
+    const pd = distance2D(pos.x, pos.z, playerPos.x, playerPos.z);
+    if (pd < 2.2) {
+      ped.state = 'down';
+      ped.downTimer = 6;
+      return 'hit';
+    }
+  }
+  return null;
 }

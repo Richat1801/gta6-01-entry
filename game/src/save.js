@@ -1,53 +1,48 @@
-// Solmar Bay save: localStorage persistence for cash, progress and position.
-// One job: remember the run, and forget it on request.
+// Save: cash, mission progress and position persist in localStorage so a
+// session can be continued from the start screen.
 
-const SAVE_KEY = 'solmar-bay-save-v1';
+import { CONFIG } from './config.js';
 
-/** Write the current run to localStorage. Returns true on success. */
 export function saveGame(state) {
   try {
     const data = {
       version: 1,
-      cash: Math.floor(state.cash),
-      missionIndex: state.missions.missionIndex,
-      missionsDone: state.missions.done,
-      playerX: state.player.x,
-      playerZ: state.player.z,
-      playerAngle: state.player.angle,
-      health: state.player.health,
-      clockMinutes: state.clockMinutes,
       savedAt: Date.now(),
+      cash: state.cash,
+      missionIndex: state.missionIndex,
+      missionsDone: state.missionsDone,
+      playerX: state.playerX,
+      playerZ: state.playerZ,
+      playerHeading: state.playerHeading,
+      health: state.health,
     };
-    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    localStorage.setItem(CONFIG.saveKey, JSON.stringify(data));
     return true;
-  } catch {
+  } catch (err) {
     return false;
   }
 }
 
-/** Read a saved run, or null when there is none / it is unreadable. */
 export function loadGame() {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(CONFIG.saveKey);
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (!data || data.version !== 1) return null;
     return data;
-  } catch {
+  } catch (err) {
     return null;
   }
 }
 
-/** Delete the saved run. */
-export function clearSave() {
-  try {
-    localStorage.removeItem(SAVE_KEY);
-  } catch {
-    // Storage unavailable — nothing to clear.
-  }
-}
-
-/** Whether a saved run exists. */
 export function hasSave() {
   return loadGame() !== null;
+}
+
+export function clearSave() {
+  try {
+    localStorage.removeItem(CONFIG.saveKey);
+  } catch (err) {
+    // Storage unavailable; nothing to clear.
+  }
 }
